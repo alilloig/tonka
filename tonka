@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$HOME/.tonka.conf"
 BASE_VM_NAME="tonka-base"
-PROJECT_PREFIX="tonka-"
+VM_NAME="tonka-vm"
 SSH_KEY="$HOME/.ssh/id_ed25519_tonka"
 TART_USER="tonka"
 
@@ -49,23 +49,21 @@ usage() {
 Usage: tonka <command> [arguments]
 
 Commands:
-  new <repo-path> [name]    Create a new project sandbox from a local git repo
-  start <project>           Start a stopped project VM
-  stop <project>            Stop a running project VM
-  delete <project>          Delete a project VM
-  list                      List all project VMs
-  shell <project>           SSH into a project VM
-  claude <project>          Run Claude in a project VM
+  new-repo <repo-path>      Clone a git repo into the VM
+  new <project> [repo]      Create a project worktree from a repo
+  sh [project]              SSH into VM (optionally into a project)
+  cl <project>              Run Claude in a project
+  start                     Start the tonka VM
+  stop                      Stop the tonka VM
+  list                      List repos and projects
+  cleanup                   Remove merged worktrees
   rebuild-base              Rebuild the base VM from scratch
 
-Options:
-  -h, --help                Show this help message
-
 Examples:
-  tonka new ~/dev/myproject
-  tonka new ~/dev/myproject myproject-feature
-  tonka shell myproject
-  tonka claude myproject
+  tonka new-repo ~/dev/myproject
+  tonka new feature-branch myproject
+  tonka sh feature-branch
+  tonka cl feature-branch
 EOF
 }
 
@@ -136,6 +134,72 @@ ensure_base_vm() {
     fi
 }
 
+ensure_vm() {
+    ensure_base_vm
+    if ! vm_exists "$VM_NAME"; then
+        log_info "Creating tonka VM from base..."
+        tart clone "$BASE_VM_NAME" "$VM_NAME"
+    fi
+    if ! vm_is_running "$VM_NAME"; then
+        log_info "Starting tonka VM..."
+        tart run --no-graphics "$VM_NAME" &
+        disown $! 2>/dev/null || true
+        sleep 15
+        local ip
+        ip=$(wait_for_vm_ip "$VM_NAME")
+        wait_for_ssh "$ip"
+        log_info "VM ready at $ip"
+    fi
+}
+
+sync_claude_settings() {
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+    local ssh_opts="-o StrictHostKeyChecking=no -i $SSH_KEY"
+    local changed=false
+
+    ssh $ssh_opts "$TART_USER@$ip" "mkdir -p ~/.claude"
+
+    # Sync settings.json if changed
+    if [[ -f "$HOME/.claude/settings.json" ]]; then
+        local local_hash remote_hash
+        local_hash=$(md5 -q "$HOME/.claude/settings.json")
+        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/settings.json 2>/dev/null" || echo "")
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            scp $ssh_opts "$HOME/.claude/settings.json" "$TART_USER@$ip":~/.claude/settings.json
+            changed=true
+        fi
+    fi
+
+    # Sync skills if changed
+    if [[ -d "$HOME/.claude/skills" ]]; then
+        local local_hash remote_hash
+        local_hash=$(find "$HOME/.claude/skills" -type f -exec md5 -q {} \; | sort | md5 -q)
+        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/skills -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            scp -r $ssh_opts "$HOME/.claude/skills" "$TART_USER@$ip":~/.claude/
+            changed=true
+        fi
+    fi
+
+    # Sync credentials from Keychain if changed
+    local creds
+    creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo "")
+    if [[ -n "$creds" ]]; then
+        local local_hash remote_hash
+        local_hash=$(echo "$creds" | md5 -q)
+        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/.credentials.json 2>/dev/null" || echo "")
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            ssh $ssh_opts "$TART_USER@$ip" "echo '$creds' > ~/.claude/.credentials.json"
+            changed=true
+        fi
+    fi
+
+    if [[ "$changed" == "true" ]]; then
+        log_info "Claude settings synced."
+    fi
+}
+
 create_base_vm() {
     log_info "Creating base VM '$BASE_VM_NAME'..."
 
@@ -174,13 +238,32 @@ create_base_vm() {
         fi
     done
 
+    # Get host brew packages
+    log_info "Getting host brew packages..."
+    local brew_formulae=""
+    local brew_casks=""
+    if command -v brew &>/dev/null; then
+        brew_formulae=$(brew list --formula | tr '\n' ' ')
+        brew_casks=$(brew list --cask | tr '\n' ' ')
+    fi
+
     # Copy install script and SSH keys (using sshpass for password auth)
     log_info "Copying install script to VM..."
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/guest/install.sh" admin@"$ip":/tmp/install.sh
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY.pub" admin@"$ip":/tmp/tonka.pub
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY" admin@"$ip":/tmp/tonka_key
 
-    # Run install script with dotfiles repo and GitHub token
+    # Copy Claude settings if they exist
+    if [[ -f "$HOME/.claude/settings.json" ]]; then
+        log_info "Copying Claude settings..."
+        sshpass -p admin scp -o StrictHostKeyChecking=no "$HOME/.claude/settings.json" admin@"$ip":/tmp/claude_settings.json
+    fi
+    if [[ -d "$HOME/.claude/skills" ]]; then
+        log_info "Copying Claude skills..."
+        sshpass -p admin scp -r -o StrictHostKeyChecking=no "$HOME/.claude/skills" admin@"$ip":/tmp/claude_skills
+    fi
+
+    # Run install script with config
     log_info "Running install script on base VM..."
     local install_env=""
     if [[ -n "${TONKA_DOTFILES_REPO:-}" ]]; then
@@ -188,6 +271,15 @@ create_base_vm() {
     fi
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         install_env="$install_env GITHUB_TOKEN='$GITHUB_TOKEN'"
+    fi
+    if [[ -n "${TONKA_TOOLS:-}" ]]; then
+        install_env="$install_env TONKA_TOOLS='$TONKA_TOOLS'"
+    fi
+    if [[ -n "$brew_formulae" ]]; then
+        install_env="$install_env BREW_FORMULAE='$brew_formulae'"
+    fi
+    if [[ -n "$brew_casks" ]]; then
+        install_env="$install_env BREW_CASKS='$brew_casks'"
     fi
     sshpass -p admin ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $install_env /tmp/install.sh"
 
@@ -198,229 +290,141 @@ create_base_vm() {
     log_info "Base VM '$BASE_VM_NAME' created successfully!"
 }
 
-cmd_new() {
+cmd_new_repo() {
     local repo_path="${1:-}"
-    local project_name="${2:-}"
-
     if [[ -z "$repo_path" ]]; then
-        die "Usage: tonka new <repo-path> [project-name]"
+        die "Usage: tonka new-repo <repo-path>"
     fi
-
-    # Resolve to absolute path
     repo_path="$(cd "$repo_path" && pwd)"
-
     if [[ ! -d "$repo_path/.git" ]]; then
         die "Not a git repository: $repo_path"
     fi
-
-    # Determine project name
-    if [[ -z "$project_name" ]]; then
-        project_name="$(basename "$repo_path")"
-    fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if vm_exists "$vm_name"; then
-        die "Project VM already exists: $vm_name"
-    fi
-
-    ensure_base_vm
-    ensure_ssh_key
-
-    log_info "Creating project VM '$vm_name' from base..."
-    tart clone "$BASE_VM_NAME" "$vm_name"
-
-    # Get the git remote URL
+    local repo_name
+    repo_name="$(basename "$repo_path")"
     local git_remote
     git_remote=$(git -C "$repo_path" remote get-url origin 2>/dev/null || echo "")
+    if [[ -z "$git_remote" ]]; then
+        die "No git remote 'origin' found"
+    fi
 
-    log_info "Starting project VM..."
-    tart run --no-graphics --dir="hostproject:$repo_path" "$vm_name" &
-    local vm_pid=$!
-
-    log_info "Waiting for VM to boot..."
-    sleep 15
+    ensure_vm
     local ip
-    ip=$(wait_for_vm_ip "$vm_name")
-    log_info "VM IP: $ip"
+    ip=$(get_vm_ip "$VM_NAME")
 
-    log_info "Waiting for SSH..."
-    wait_for_ssh "$ip"
+    log_info "Cloning $repo_name into VM..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "mkdir -p ~/repos && git clone '$git_remote' ~/repos/$repo_name"
+    log_info "Repo '$repo_name' added. Create a project with: tonka new <project-name> $repo_name"
+}
 
-    # Copy and run configure script
-    log_info "Configuring project environment..."
-    scp -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SCRIPT_DIR/guest/configure.sh" "$TART_USER@$ip":/tmp/configure.sh
+cmd_new() {
+    local project_name="${1:-}"
+    local repo_name="${2:-}"
+    if [[ -z "$project_name" ]]; then
+        die "Usage: tonka new <project-name> [repo-name]"
+    fi
 
-    # Pass configuration via environment
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
-        "GIT_REMOTE='$git_remote' PROJECT_NAME='$project_name' bash /tmp/configure.sh"
+    ensure_vm
+    sync_claude_settings
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
 
-    log_info "Project '$project_name' created successfully!"
-    log_info "VM is running. Use 'tonka shell $project_name' to connect."
-    log_info "Or 'tonka stop $project_name' to stop the VM."
+    # If no repo specified, try to find one
+    if [[ -z "$repo_name" ]]; then
+        repo_name=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "ls ~/repos 2>/dev/null | head -1" || echo "")
+        if [[ -z "$repo_name" ]]; then
+            die "No repos found. Add one with: tonka new-repo <repo-path>"
+        fi
+        log_info "Using repo: $repo_name"
+    fi
 
-    # Detach from the VM process
-    disown $vm_pid 2>/dev/null || true
+    log_info "Creating worktree '$project_name' from '$repo_name'..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "mkdir -p ~/projects && cd ~/repos/$repo_name && git worktree add ~/projects/$project_name -b $project_name"
+
+    log_info "Starting Claude in $project_name..."
+    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+        "cd ~/projects/$project_name && ~/.local/bin/claude --dangerously-skip-permissions"
 }
 
 cmd_start() {
-    local project_name="${1:-}"
-
-    if [[ -z "$project_name" ]]; then
-        die "Usage: tonka start <project>"
-    fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if ! vm_exists "$vm_name"; then
-        die "Project VM does not exist: $vm_name"
-    fi
-
-    if vm_is_running "$vm_name"; then
-        log_warn "VM is already running: $vm_name"
-        return
-    fi
-
-    log_info "Starting VM '$vm_name'..."
-    tart run --no-graphics "$vm_name" &
-    disown $! 2>/dev/null || true
-
-    log_info "Waiting for VM to boot..."
-    sleep 15
-    local ip
-    ip=$(wait_for_vm_ip "$vm_name")
-    wait_for_ssh "$ip"
-
-    log_info "VM '$vm_name' started. IP: $ip"
+    ensure_vm
 }
 
 cmd_stop() {
-    local project_name="${1:-}"
-
-    if [[ -z "$project_name" ]]; then
-        die "Usage: tonka stop <project>"
-    fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if ! vm_exists "$vm_name"; then
-        die "Project VM does not exist: $vm_name"
-    fi
-
-    if ! vm_is_running "$vm_name"; then
-        log_warn "VM is not running: $vm_name"
+    if ! vm_is_running "$VM_NAME"; then
+        log_warn "VM is not running"
         return
     fi
-
-    log_info "Stopping VM '$vm_name'..."
-    tart stop "$vm_name"
+    log_info "Stopping tonka VM..."
+    tart stop "$VM_NAME"
     log_info "VM stopped."
 }
 
-cmd_delete() {
-    local project_name="${1:-}"
-
-    if [[ -z "$project_name" ]]; then
-        die "Usage: tonka delete <project>"
-    fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if ! vm_exists "$vm_name"; then
-        die "Project VM does not exist: $vm_name"
-    fi
-
-    if vm_is_running "$vm_name"; then
-        log_info "Stopping VM first..."
-        tart stop "$vm_name"
-    fi
-
-    log_info "Deleting VM '$vm_name'..."
-    tart delete "$vm_name"
-    log_info "VM deleted."
-}
-
 cmd_list() {
-    log_info "Project VMs:"
-    tart list | while read -r line; do
-        local name=$(echo "$line" | awk '{print $2}')
-        if [[ "$name" == ${PROJECT_PREFIX}* ]]; then
-            local status=$(echo "$line" | awk '{print $NF}')
-            # Strip prefix for display
-            local project_name="${name#$PROJECT_PREFIX}"
-            echo "  $project_name ($status)"
-        fi
+    if ! vm_is_running "$VM_NAME"; then
+        log_warn "VM is not running. Start with: tonka start"
+        return
+    fi
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    log_info "Repos:"
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "ls ~/repos 2>/dev/null" | while read -r r; do
+        echo "  $r"
+    done
+
+    log_info "Projects:"
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "ls ~/projects 2>/dev/null" | while read -r p; do
+        echo "  $p"
     done
 }
 
-cmd_shell() {
-    local project_name="${1:-}"
-
-    if [[ -z "$project_name" ]]; then
-        die "Usage: tonka shell <project>"
+cmd_cleanup() {
+    if ! vm_is_running "$VM_NAME"; then
+        die "VM is not running. Start with: tonka start"
     fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if ! vm_exists "$vm_name"; then
-        die "Project VM does not exist: $vm_name"
-    fi
-
-    if ! vm_is_running "$vm_name"; then
-        log_info "VM is not running. Starting it..."
-        cmd_start "$project_name"
-    fi
-
     local ip
-    ip=$(get_vm_ip "$vm_name")
+    ip=$(get_vm_ip "$VM_NAME")
 
-    if [[ -z "$ip" ]]; then
-        die "Could not get VM IP"
-    fi
-
-    log_info "Connecting to $vm_name ($ip)..."
-    # Pass GITHUB_TOKEN if set
-    local env_args=""
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        env_args="GITHUB_TOKEN=$GITHUB_TOKEN"
-    fi
-
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" "$env_args exec \$SHELL -l"
+    log_info "Cleaning up merged worktrees..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" '
+        for repo in ~/repos/*; do
+            [ -d "$repo" ] || continue
+            cd "$repo"
+            git worktree prune
+        done
+    '
+    log_info "Done."
 }
 
-cmd_claude() {
+cmd_sh() {
     local project_name="${1:-}"
-
-    if [[ -z "$project_name" ]]; then
-        die "Usage: tonka claude <project>"
-    fi
-
-    local vm_name="${PROJECT_PREFIX}${project_name}"
-
-    if ! vm_exists "$vm_name"; then
-        die "Project VM does not exist: $vm_name"
-    fi
-
-    if ! vm_is_running "$vm_name"; then
-        log_info "VM is not running. Starting it..."
-        cmd_start "$project_name"
-    fi
-
+    ensure_vm
     local ip
-    ip=$(get_vm_ip "$vm_name")
+    ip=$(get_vm_ip "$VM_NAME")
 
-    if [[ -z "$ip" ]]; then
-        die "Could not get VM IP"
+    local cd_cmd=""
+    if [[ -n "$project_name" ]]; then
+        cd_cmd="cd ~/projects/$project_name && "
     fi
 
-    log_info "Starting Claude in $vm_name..."
-    # Pass GITHUB_TOKEN if set
-    local env_cmd=""
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        env_cmd="export GITHUB_TOKEN='$GITHUB_TOKEN'; "
-    fi
+    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" "${cd_cmd}exec \$SHELL -l"
+}
 
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" "${env_cmd}cd ~/project && ~/bin/claude"
+cmd_cl() {
+    local project_name="${1:-}"
+    if [[ -z "$project_name" ]]; then
+        die "Usage: tonka cl <project>"
+    fi
+    ensure_vm
+    sync_claude_settings
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    log_info "Starting Claude in $project_name..."
+    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+        "cd ~/projects/$project_name && ~/.local/bin/claude --dangerously-skip-permissions"
 }
 
 cmd_rebuild_base() {
@@ -434,6 +438,23 @@ cmd_rebuild_base() {
     fi
 
     create_base_vm
+
+    # Prompt to rebuild tonka-vm
+    if vm_exists "$VM_NAME"; then
+        log_warn "tonka-vm exists but was created from the old base."
+        log_warn "Rebuilding it will DELETE all repos and projects."
+        read -p "Rebuild tonka-vm? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if vm_is_running "$VM_NAME"; then
+                log_info "Stopping tonka-vm..."
+                tart stop "$VM_NAME"
+            fi
+            log_info "Deleting tonka-vm..."
+            tart delete "$VM_NAME"
+            log_info "tonka-vm will be recreated on next use."
+        fi
+    fi
 }
 
 # Main command dispatcher
@@ -444,32 +465,33 @@ main() {
     fi
 
     case "$1" in
+        new-repo)
+            shift
+            cmd_new_repo "$@"
+            ;;
         new)
             shift
             cmd_new "$@"
             ;;
         start)
-            shift
-            cmd_start "$@"
+            cmd_start
             ;;
         stop)
-            shift
-            cmd_stop "$@"
-            ;;
-        delete)
-            shift
-            cmd_delete "$@"
+            cmd_stop
             ;;
         list)
             cmd_list
             ;;
-        shell)
+        sh)
             shift
-            cmd_shell "$@"
+            cmd_sh "$@"
             ;;
-        claude)
+        cl)
             shift
-            cmd_claude "$@"
+            cmd_cl "$@"
+            ;;
+        cleanup)
+            cmd_cleanup
             ;;
         rebuild-base)
             cmd_rebuild_base
