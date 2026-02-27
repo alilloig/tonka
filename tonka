@@ -14,7 +14,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 # Set defaults for configurable values (after config file is loaded)
-TONKA_BASE_IMAGE="${TONKA_BASE_IMAGE:-ghcr.io/cirruslabs/macos-sequoia-vanilla:latest}"
+TONKA_BASE_IMAGE="${TONKA_BASE_IMAGE:-ghcr.io/cirruslabs/macos-tahoe-xcode:latest}"
 
 # Get GitHub token from gh CLI if not set
 if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh &>/dev/null; then
