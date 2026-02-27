@@ -36,7 +36,7 @@ fi
 sudo chown -R tonka:staff /Users/tonka/.ssh
 
 # Add github.com to known_hosts
-sudo -u tonka -H ssh-keyscan github.com >> /Users/tonka/.ssh/known_hosts 2>/dev/null
+sudo -u tonka -H bash -c 'ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null'
 
 # Enable passwordless sudo for tonka user
 echo "Enabling passwordless sudo for tonka..."
