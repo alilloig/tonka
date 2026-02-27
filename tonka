@@ -56,6 +56,7 @@ Commands:
   new <project> [repo]      Create a project worktree from a repo
   pr <pr#> [repo]           Checkout a PR (creates project or opens existing)
   cp <src> [dest]           Copy a local file/directory into the VM (dest defaults to ~)
+  sync                      Fetch branches from VM repo to current local repo
   sh [project]              SSH into VM (optionally into a project)
   cl <project>              Run Claude in a project
   start                     Start the tonka VM
@@ -505,6 +506,27 @@ cmd_cp() {
     log_info "Done."
 }
 
+cmd_sync() {
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "Not in a git repository"
+    local repo_name
+    repo_name=$(basename "$repo_root")
+
+    ensure_vm
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    # Check if the repo exists in the VM
+    if ! ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "test -d ~/repos/$repo_name" 2>/dev/null; then
+        die "Repo '$repo_name' not found in VM. Add it with: tonka new-repo $repo_root"
+    fi
+
+    log_info "Fetching branches from VM repo '$repo_name'..."
+    GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i $SSH_KEY" \
+        git -C "$repo_root" fetch "$TART_USER@$ip:repos/$repo_name" 'refs/heads/*:refs/remotes/tonka/*'
+    log_info "Done. Branches available as tonka/<branch>"
+}
+
 cmd_start() {
     ensure_vm
 }
@@ -677,6 +699,9 @@ main() {
         cp)
             shift
             cmd_cp "$@"
+            ;;
+        sync)
+            cmd_sync
             ;;
         start)
             cmd_start
