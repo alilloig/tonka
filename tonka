@@ -13,6 +13,9 @@ if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
+# Set defaults for configurable values (after config file is loaded)
+TONKA_BASE_IMAGE="${TONKA_BASE_IMAGE:-ghcr.io/cirruslabs/macos-sequoia-vanilla:latest}"
+
 # Get GitHub token from gh CLI if not set
 if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh &>/dev/null; then
     GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
@@ -138,9 +141,9 @@ create_base_vm() {
 
     ensure_ssh_key
 
-    # Clone the vanilla macOS image
-    log_info "Cloning ghcr.io/cirruslabs/macos-sequoia-vanilla:latest..."
-    tart clone ghcr.io/cirruslabs/macos-sequoia-vanilla:latest "$BASE_VM_NAME"
+    # Clone the base macOS image
+    log_info "Cloning $TONKA_BASE_IMAGE..."
+    tart clone "$TONKA_BASE_IMAGE" "$BASE_VM_NAME"
 
     log_info "Starting base VM for configuration..."
     tart run --no-graphics "$BASE_VM_NAME" &

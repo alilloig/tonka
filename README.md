@@ -62,5 +62,6 @@ tonka rebuild-base
 Config file: `~/.tonka.conf` (sourced as shell script)
 
 Variables (can be set in config file or environment):
+- `TONKA_BASE_IMAGE` - Tart image to use for base VM (default: `ghcr.io/cirruslabs/macos-sequoia-vanilla:latest`)
 - `TONKA_DOTFILES_REPO` - Git URL of your dotfiles repo (must have `setup.sh` at root)
 - `GITHUB_TOKEN` - Passed to VM for GitHub CLI authentication (auto-detected from `gh auth token` if not set)
