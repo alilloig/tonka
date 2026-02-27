@@ -174,10 +174,11 @@ create_base_vm() {
         fi
     done
 
-    # Copy install script and SSH key (using sshpass for password auth)
+    # Copy install script and SSH keys (using sshpass for password auth)
     log_info "Copying install script to VM..."
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/guest/install.sh" admin@"$ip":/tmp/install.sh
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY.pub" admin@"$ip":/tmp/tonka.pub
+    sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY" admin@"$ip":/tmp/tonka_key
 
     # Run install script with dotfiles repo and GitHub token
     log_info "Running install script on base VM..."

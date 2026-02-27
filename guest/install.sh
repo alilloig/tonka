@@ -22,12 +22,21 @@ echo "Configuring SSH access..."
 sudo mkdir -p /Users/tonka/.ssh
 sudo chmod 700 /Users/tonka/.ssh
 
-# Copy SSH public key
+# Copy SSH keys
 if [[ -f /tmp/tonka.pub ]]; then
     sudo cp /tmp/tonka.pub /Users/tonka/.ssh/authorized_keys
     sudo chmod 600 /Users/tonka/.ssh/authorized_keys
-    sudo chown -R tonka:staff /Users/tonka/.ssh
 fi
+if [[ -f /tmp/tonka_key ]]; then
+    sudo cp /tmp/tonka_key /Users/tonka/.ssh/id_ed25519
+    sudo cp /tmp/tonka.pub /Users/tonka/.ssh/id_ed25519.pub
+    sudo chmod 600 /Users/tonka/.ssh/id_ed25519
+    sudo chmod 644 /Users/tonka/.ssh/id_ed25519.pub
+fi
+sudo chown -R tonka:staff /Users/tonka/.ssh
+
+# Add github.com to known_hosts
+sudo -u tonka -H ssh-keyscan github.com >> /Users/tonka/.ssh/known_hosts 2>/dev/null
 
 # Enable passwordless sudo for tonka user
 echo "Enabling passwordless sudo for tonka..."
@@ -48,17 +57,7 @@ sudo -u tonka -H /opt/homebrew/bin/brew install git gh
 echo "Enabling SSH..."
 sudo systemsetup -setremotelogin on
 
-# Configure GitHub CLI and git credential helper
-if [[ -n "$GITHUB_TOKEN" ]]; then
-    echo "Configuring GitHub authentication..."
-    sudo -u tonka -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
-    sudo -u tonka -H /opt/homebrew/bin/gh auth setup-git
-fi
-
-# Configure git to use HTTPS instead of SSH for GitHub
-sudo -u tonka -H git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-# Clone and run dotfiles if specified
+# Clone and run dotfiles if specified (uses SSH key for personal GitHub)
 if [[ -n "$DOTFILES_REPO" ]]; then
     echo "Setting up dotfiles from: $DOTFILES_REPO"
     sudo -u tonka -H git clone "$DOTFILES_REPO" /Users/tonka/.dotfiles
@@ -72,8 +71,15 @@ else
     echo "No TONKA_DOTFILES_REPO set, skipping dotfiles setup"
 fi
 
+# Configure GitHub CLI and git credential helper (for work repos)
+if [[ -n "$GITHUB_TOKEN" ]]; then
+    echo "Configuring GitHub CLI authentication..."
+    sudo -u tonka -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
+    sudo -u tonka -H /opt/homebrew/bin/gh auth setup-git
+fi
+
 # Clean up
 echo "Cleaning up..."
-rm -f /tmp/tonka.pub /tmp/install.sh
+rm -f /tmp/tonka.pub /tmp/tonka_key /tmp/install.sh
 
 echo "=== Base VM setup complete ==="
