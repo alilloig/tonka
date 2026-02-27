@@ -27,6 +27,10 @@ if [[ -f /tmp/tonka.pub ]]; then
     sudo chown -R tonka:staff /Users/tonka/.ssh
 fi
 
+# Enable passwordless sudo for tonka user
+echo "Enabling passwordless sudo for tonka..."
+echo "tonka ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/tonka
+
 # Install Homebrew as tonka user
 echo "Installing Homebrew..."
 sudo -u tonka /bin/bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
