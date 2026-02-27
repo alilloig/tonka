@@ -2,10 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$HOME/.tonka.conf"
 BASE_VM_NAME="tonka-base"
 PROJECT_PREFIX="tonka-"
 SSH_KEY="$HOME/.ssh/id_ed25519_tonka"
 TART_USER="tonka"
+
+# Load config file if it exists
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+fi
 
 # Colors for output
 RED='\033[0;31m'

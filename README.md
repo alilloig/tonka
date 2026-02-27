@@ -11,13 +11,19 @@ Unlike shared-directory approaches, Tonka clones the git repo *inside* the VM fo
 
 ## Setup
 
-Set your dotfiles repo (must have `setup.sh` at the root):
+Create a config file at `~/.tonka.conf`:
+
+```bash
+TONKA_DOTFILES_REPO="git@github.com:yourusername/dotfiles.git"
+```
+
+Or set the environment variable:
 
 ```bash
 export TONKA_DOTFILES_REPO="git@github.com:yourusername/dotfiles.git"
 ```
 
-Your dotfiles setup should install Claude Code and any other tools you need.
+Your dotfiles repo must have a `setup.sh` script at the root that installs Claude Code and any other tools you need.
 
 ## Usage
 
@@ -51,7 +57,10 @@ tonka rebuild-base
 3. **SSH Agent Forwarding**: `-A` flag passes your SSH agent for git authentication
 4. **GitHub Token**: Pass `GITHUB_TOKEN` env var for GitHub CLI authentication
 
-## Environment Variables
+## Configuration
 
+Config file: `~/.tonka.conf` (sourced as shell script)
+
+Variables (can be set in config file or environment):
 - `TONKA_DOTFILES_REPO` - Git URL of your dotfiles repo (must have `setup.sh` at root)
 - `GITHUB_TOKEN` - Passed to VM for GitHub CLI authentication
