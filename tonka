@@ -54,6 +54,7 @@ Usage: tonka <command> [arguments]
 Commands:
   new-repo <repo-path>      Clone a git repo into the VM
   new <project> [repo]      Create a project worktree from a repo
+  pr <pr#> [repo]           Checkout a PR (creates project or opens existing)
   sh [project]              SSH into VM (optionally into a project)
   cl <project>              Run Claude in a project
   start                     Start the tonka VM
@@ -65,6 +66,7 @@ Commands:
 Examples:
   tonka new-repo ~/dev/myproject
   tonka new feature-branch myproject
+  tonka pr 123
   tonka sh feature-branch
   tonka cl feature-branch
 EOF
@@ -424,6 +426,62 @@ cmd_new() {
         "cd ~/projects/$project_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
 }
 
+cmd_pr() {
+    local pr_number="${1:-}"
+    local repo_name="${2:-}"
+
+    if [[ -z "$pr_number" ]]; then
+        die "Usage: tonka pr <pr-number> [repo-name]"
+    fi
+
+    ensure_vm
+    sync_claude_settings
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    # If no repo specified, try to find one
+    if [[ -z "$repo_name" ]]; then
+        repo_name=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "ls ~/repos 2>/dev/null | head -1" || echo "")
+        if [[ -z "$repo_name" ]]; then
+            die "No repos found. Add one with: tonka new-repo <repo-path>"
+        fi
+        log_info "Using repo: $repo_name"
+    fi
+
+    # Get the PR's branch name
+    log_info "Looking up PR #$pr_number..."
+    local branch_name
+    branch_name=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "cd ~/repos/$repo_name && gh pr view $pr_number --json headRefName -q .headRefName" 2>/dev/null || echo "")
+
+    if [[ -z "$branch_name" ]]; then
+        die "Could not find PR #$pr_number"
+    fi
+
+    log_info "PR #$pr_number branch: $branch_name"
+
+    # Check if a project exists with the branch name
+    if ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "test -d ~/projects/$branch_name" 2>/dev/null; then
+        log_info "Found existing project '$branch_name'. Starting Claude..."
+        ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+            "cd ~/projects/$branch_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+        return
+    fi
+
+    # No existing project found, create one with the branch name
+    log_info "Fetching PR #$pr_number..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "cd ~/repos/$repo_name && git fetch origin pull/$pr_number/head:$branch_name"
+
+    log_info "Creating worktree '$branch_name'..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "mkdir -p ~/projects && cd ~/repos/$repo_name && git worktree add ~/projects/$branch_name $branch_name"
+
+    log_info "Starting Claude in $branch_name..."
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+        "cd ~/projects/$branch_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+}
+
 cmd_start() {
     ensure_vm
 }
@@ -588,6 +646,10 @@ main() {
         new)
             shift
             cmd_new "$@"
+            ;;
+        pr)
+            shift
+            cmd_pr "$@"
             ;;
         start)
             cmd_start
