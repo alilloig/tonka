@@ -180,12 +180,13 @@ create_base_vm() {
     sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY.pub" admin@"$ip":/tmp/tonka.pub
 
     # Run install script with dotfiles repo if set
+    # Use -A for SSH agent forwarding so dotfiles can clone via SSH
     log_info "Running install script on base VM..."
     local dotfiles_env=""
     if [[ -n "${TONKA_DOTFILES_REPO:-}" ]]; then
         dotfiles_env="TONKA_DOTFILES_REPO='$TONKA_DOTFILES_REPO'"
     fi
-    sshpass -p admin ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $dotfiles_env /tmp/install.sh"
+    sshpass -p admin ssh -A -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $dotfiles_env /tmp/install.sh"
 
     log_info "Stopping base VM..."
     tart stop "$BASE_VM_NAME"

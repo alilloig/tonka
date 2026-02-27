@@ -49,10 +49,19 @@ sudo systemsetup -setremotelogin on
 # Clone and run dotfiles if specified
 if [[ -n "$DOTFILES_REPO" ]]; then
     echo "Setting up dotfiles from: $DOTFILES_REPO"
-    sudo -u tonka -H git clone "$DOTFILES_REPO" /Users/tonka/.dotfiles
+    # Add github.com to known_hosts
+    sudo -u tonka -H ssh-keyscan github.com >> /Users/tonka/.ssh/known_hosts 2>/dev/null
+
+    # Make SSH agent socket accessible to tonka user
+    if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+        chmod 777 "$(dirname "$SSH_AUTH_SOCK")"
+        chmod 777 "$SSH_AUTH_SOCK"
+    fi
+
+    sudo --preserve-env=SSH_AUTH_SOCK -u tonka -H git clone "$DOTFILES_REPO" /Users/tonka/.dotfiles
     if [[ -f /Users/tonka/.dotfiles/setup.sh ]]; then
         echo "Running dotfiles setup.sh..."
-        sudo -u tonka -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'
+        sudo --preserve-env=SSH_AUTH_SOCK -u tonka -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'
     else
         echo "Warning: No setup.sh found in dotfiles repo"
     fi
