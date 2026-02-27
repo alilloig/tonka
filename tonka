@@ -196,11 +196,12 @@ sync_claude_settings() {
         fi
 
         for plugin in $plugins; do
-            if ! ssh $ssh_opts "$TART_USER@$ip" "grep -q '$plugin' ~/.claude/plugins/installed_plugins.json 2>/dev/null"; then
-                log_info "Installing plugin: $plugin"
-                ssh $ssh_opts "$TART_USER@$ip" "~/.local/bin/claude plugin install '$plugin'" || true
-                changed=true
+            if ssh $ssh_opts "$TART_USER@$ip" "test -f ~/.claude/plugins/installed_plugins.json && grep -q '$plugin' ~/.claude/plugins/installed_plugins.json"; then
+                continue
             fi
+            log_info "Installing plugin: $plugin"
+            ssh $ssh_opts "$TART_USER@$ip" "~/.local/bin/claude plugin install '$plugin'" || true
+            changed=true
         done
     fi
 
