@@ -8,11 +8,13 @@ Ephemeral tart-based sandboxes for running Claude Code with `--dangerously-skip-
 
 ## Features
 
-- **No shared volumes** - Code lives entirely inside the VM for complete isolation
-- **Automatic sync** of Claude settings, credentials, and plugins
-- **GitHub credentials** synced via `gh` CLI
+- **No shared volumes** - Code lives entirely inside the VM
+- **Automatic sync** of
+  - Claude settings, credentials, and plugins
+  - GitHub credentials for `gh` and `git`
 - **Dotfiles support** - Installs your dotfiles repo automatically
-- **Configurable tools** - Install Rust, Go, Node.js, Python, and your brew packages
+- **Brew** - Automatically `brew install`s everything you have installed on the host OS
+- **Tools** - Easy install of Rust, Go, Node.js, Python if you need them.
 
 ## Prerequisites
 
