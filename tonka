@@ -493,11 +493,50 @@ cmd_rebuild_base() {
     fi
 }
 
+cmd_default() {
+    ensure_vm
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    # Get list of projects
+    local projects
+    projects=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "ls ~/projects 2>/dev/null" || echo "")
+
+    if [[ -z "$projects" ]]; then
+        die "No projects found. Create one with: tonka new <project-name> [repo-name]"
+    fi
+
+    # Convert to array
+    local -a project_list
+    while IFS= read -r p; do
+        project_list+=("$p")
+    done <<< "$projects"
+
+    if [[ ${#project_list[@]} -eq 1 ]]; then
+        # Only one project, use it directly
+        cmd_cl "${project_list[0]}"
+    else
+        # Multiple projects, prompt user
+        echo "Select a project:"
+        local i=1
+        for p in "${project_list[@]}"; do
+            echo "  $i) $p"
+            ((i++))
+        done
+        read -p "Enter number: " -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#project_list[@]} ]]; then
+            cmd_cl "${project_list[$((choice-1))]}"
+        else
+            die "Invalid selection"
+        fi
+    fi
+}
+
 # Main command dispatcher
 main() {
     if [[ $# -eq 0 ]]; then
-        usage
-        exit 1
+        cmd_default
+        exit 0
     fi
 
     case "$1" in
