@@ -7,6 +7,7 @@ Unlike shared-directory approaches, Tonka clones the git repo *inside* the VM fo
 ## Prerequisites
 
 - [Tart](https://tart.run/) - macOS VM manager
+- `sshpass` - For initial VM setup (`brew install hudochenkov/sshpass/sshpass`)
 - A dotfiles repo with a `setup.sh` script (optional but recommended)
 
 ## Setup

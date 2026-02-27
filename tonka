@@ -139,6 +139,11 @@ ensure_base_vm() {
 create_base_vm() {
     log_info "Creating base VM '$BASE_VM_NAME'..."
 
+    # Check for sshpass (needed for initial password auth)
+    if ! command -v sshpass &>/dev/null; then
+        die "sshpass is required for base VM setup. Install with: brew install sshpass"
+    fi
+
     ensure_ssh_key
 
     # Clone the base macOS image
@@ -156,11 +161,11 @@ create_base_vm() {
     ip=$(wait_for_vm_ip "$BASE_VM_NAME")
     log_info "VM IP: $ip"
 
-    # Wait for SSH with default credentials
+    # Wait for SSH with default credentials (admin/admin)
     log_info "Waiting for SSH to be ready..."
     local max_attempts=60
     local attempt=0
-    while ! ssh -o ConnectTimeout=2 -o StrictHostKeyChecking=no -o BatchMode=yes admin@"$ip" true 2>/dev/null; do
+    while ! sshpass -p admin ssh -o ConnectTimeout=2 -o StrictHostKeyChecking=no admin@"$ip" true 2>/dev/null; do
         sleep 1
         ((attempt++))
         if [[ $attempt -ge $max_attempts ]]; then
@@ -169,11 +174,10 @@ create_base_vm() {
         fi
     done
 
-    # Copy install script and SSH key
+    # Copy install script and SSH key (using sshpass for password auth)
     log_info "Copying install script to VM..."
-    scp -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SCRIPT_DIR/guest/install.sh" admin@"$ip":/tmp/install.sh 2>/dev/null || \
-        scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/guest/install.sh" admin@"$ip":/tmp/install.sh
-    scp -o StrictHostKeyChecking=no "$SSH_KEY.pub" admin@"$ip":/tmp/tonka.pub
+    sshpass -p admin scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/guest/install.sh" admin@"$ip":/tmp/install.sh
+    sshpass -p admin scp -o StrictHostKeyChecking=no "$SSH_KEY.pub" admin@"$ip":/tmp/tonka.pub
 
     # Run install script with dotfiles repo if set
     log_info "Running install script on base VM..."
@@ -181,7 +185,7 @@ create_base_vm() {
     if [[ -n "${TONKA_DOTFILES_REPO:-}" ]]; then
         dotfiles_env="TONKA_DOTFILES_REPO='$TONKA_DOTFILES_REPO'"
     fi
-    ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $dotfiles_env /tmp/install.sh"
+    sshpass -p admin ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $dotfiles_env /tmp/install.sh"
 
     log_info "Stopping base VM..."
     tart stop "$BASE_VM_NAME"
