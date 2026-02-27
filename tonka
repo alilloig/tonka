@@ -182,15 +182,17 @@ sync_claude_settings() {
         fi
     fi
 
-    # Sync plugins if changed
-    if [[ -d "$HOME/.claude/plugins" ]]; then
-        local local_hash remote_hash
-        local_hash=$(find "$HOME/.claude/plugins" -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q)
-        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/plugins -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
-        if [[ "$local_hash" != "$remote_hash" ]]; then
-            scp -r $ssh_opts "$HOME/.claude/plugins" "$TART_USER@$ip":~/.claude/
-            changed=true
-        fi
+    # Install plugins if not already installed
+    if [[ -f "$HOME/.claude/plugins/installed_plugins.json" ]]; then
+        local plugins
+        plugins=$(jq -r '.plugins | keys[]' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null || echo "")
+        for plugin in $plugins; do
+            if ! ssh $ssh_opts "$TART_USER@$ip" "grep -q '$plugin' ~/.claude/plugins/installed_plugins.json 2>/dev/null"; then
+                log_info "Installing plugin: $plugin"
+                ssh $ssh_opts "$TART_USER@$ip" "~/.local/bin/claude plugin install '$plugin'" || true
+                changed=true
+            fi
+        done
     fi
 
     # Sync ~/.claude.json if changed (has hasCompletedOnboarding etc)
