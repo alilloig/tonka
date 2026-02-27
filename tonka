@@ -6,7 +6,7 @@ CONFIG_FILE="$HOME/.tonka.conf"
 BASE_VM_NAME="tonka-base"
 VM_NAME="tonka-vm"
 SSH_KEY="$HOME/.ssh/id_ed25519_tonka"
-TART_USER="tonka"
+TART_USER="$(whoami)"
 
 # Load config file if it exists
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -182,6 +182,28 @@ sync_claude_settings() {
         fi
     fi
 
+    # Sync plugins if changed
+    if [[ -d "$HOME/.claude/plugins" ]]; then
+        local local_hash remote_hash
+        local_hash=$(find "$HOME/.claude/plugins" -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q)
+        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/plugins -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            scp -r $ssh_opts "$HOME/.claude/plugins" "$TART_USER@$ip":~/.claude/
+            changed=true
+        fi
+    fi
+
+    # Sync ~/.claude.json if changed (has hasCompletedOnboarding etc)
+    if [[ -f "$HOME/.claude.json" ]]; then
+        local local_hash remote_hash
+        local_hash=$(md5 -q "$HOME/.claude.json")
+        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude.json 2>/dev/null" || echo "")
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            scp $ssh_opts "$HOME/.claude.json" "$TART_USER@$ip":~/.claude.json
+            changed=true
+        fi
+    fi
+
     # Sync credentials from Keychain if changed
     local creds
     creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo "")
@@ -265,9 +287,9 @@ create_base_vm() {
 
     # Run install script with config
     log_info "Running install script on base VM..."
-    local install_env=""
+    local install_env="TONKA_USER='$TART_USER'"
     if [[ -n "${TONKA_DOTFILES_REPO:-}" ]]; then
-        install_env="TONKA_DOTFILES_REPO='$TONKA_DOTFILES_REPO'"
+        install_env="$install_env TONKA_DOTFILES_REPO='$TONKA_DOTFILES_REPO'"
     fi
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
         install_env="$install_env GITHUB_TOKEN='$GITHUB_TOKEN'"
@@ -290,6 +312,16 @@ create_base_vm() {
     log_info "Base VM '$BASE_VM_NAME' created successfully!"
 }
 
+ssh_to_https() {
+    local url="$1"
+    # Convert git@github.com:user/repo.git to https://github.com/user/repo.git
+    if [[ "$url" =~ ^git@([^:]+):(.+)$ ]]; then
+        echo "https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    else
+        echo "$url"
+    fi
+}
+
 cmd_new_repo() {
     local repo_path="${1:-}"
     if [[ -z "$repo_path" ]]; then
@@ -306,6 +338,8 @@ cmd_new_repo() {
     if [[ -z "$git_remote" ]]; then
         die "No git remote 'origin' found"
     fi
+    # Convert SSH URL to HTTPS for gh credential helper
+    git_remote=$(ssh_to_https "$git_remote")
 
     ensure_vm
     local ip
@@ -343,8 +377,8 @@ cmd_new() {
         "mkdir -p ~/projects && cd ~/repos/$repo_name && git worktree add ~/projects/$project_name -b $project_name"
 
     log_info "Starting Claude in $project_name..."
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-        "cd ~/projects/$project_name && ~/.local/bin/claude --dangerously-skip-permissions"
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+        "cd ~/projects/$project_name && \$SHELL -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo "Claude exited. You are still in the tonka VM. Press Ctrl-D to leave."; exec \$SHELL -l'"
 }
 
 cmd_start() {
@@ -409,7 +443,7 @@ cmd_sh() {
         cd_cmd="cd ~/projects/$project_name && "
     fi
 
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" "${cd_cmd}exec \$SHELL -l"
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" "${cd_cmd}exec \$SHELL -l"
 }
 
 cmd_cl() {
@@ -423,8 +457,8 @@ cmd_cl() {
     ip=$(get_vm_ip "$VM_NAME")
 
     log_info "Starting Claude in $project_name..."
-    ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-        "cd ~/projects/$project_name && ~/.local/bin/claude --dangerously-skip-permissions"
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
+        "cd ~/projects/$project_name && \$SHELL -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo "Claude exited. You are still in the tonka VM. Press Ctrl-D to leave."; exec \$SHELL -l'"
 }
 
 cmd_rebuild_base() {

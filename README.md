@@ -1,8 +1,18 @@
 # Tonka
 
+*Making sandboxes fun*
+
+![Tonka Truck](tonka.webp)
+
 Ephemeral tart-based sandboxes for running Claude Code with `--dangerously-skip-permissions`.
 
-Unlike shared-directory approaches, Tonka clones the git repo *inside* the VM for complete isolation. SSH agent forwarding allows git operations from within the VM.
+## Features
+
+- **No shared volumes** - Code lives entirely inside the VM for complete isolation
+- **Automatic sync** of Claude settings, credentials, and plugins
+- **GitHub credentials** synced via `gh` CLI
+- **Dotfiles support** - Installs your dotfiles repo automatically
+- **Configurable tools** - Install Rust, Go, Node.js, Python, and your brew packages
 
 ## Prerequisites
 
@@ -53,10 +63,9 @@ tonka rebuild-base
 
 ## How It Works
 
-1. **Base VM**: Created once from `ghcr.io/cirruslabs/macos-sequoia-vanilla`, with your dotfiles installed
-2. **Project VMs**: Cloned from base VM, with the git repo cloned from a temporary host mount
-3. **SSH Agent Forwarding**: `-A` flag passes your SSH agent for git authentication
-4. **GitHub Token**: Pass `GITHUB_TOKEN` env var for GitHub CLI authentication
+1. **Base VM**: Created once with your dotfiles, tools, and Claude CLI installed
+2. **Tonka VM**: Cloned from base, contains your repos and project worktrees
+3. **Git Auth**: Uses `gh` CLI credential helper (synced from host)
 
 ## Configuration
 
