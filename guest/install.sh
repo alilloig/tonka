@@ -4,10 +4,12 @@
 #
 # Environment variables:
 #   TONKA_DOTFILES_REPO - Git URL of dotfiles repo (must have setup.sh at root)
+#   GITHUB_TOKEN - GitHub token for git authentication
 
 set -euo pipefail
 
 DOTFILES_REPO="${TONKA_DOTFILES_REPO:-}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 echo "=== Tonka Base VM Setup ==="
 
@@ -46,22 +48,23 @@ sudo -u tonka -H /opt/homebrew/bin/brew install git gh
 echo "Enabling SSH..."
 sudo systemsetup -setremotelogin on
 
+# Configure GitHub CLI and git credential helper
+if [[ -n "$GITHUB_TOKEN" ]]; then
+    echo "Configuring GitHub authentication..."
+    sudo -u tonka -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
+    sudo -u tonka -H /opt/homebrew/bin/gh auth setup-git
+fi
+
+# Configure git to use HTTPS instead of SSH for GitHub
+sudo -u tonka -H git config --global url."https://github.com/".insteadOf "git@github.com:"
+
 # Clone and run dotfiles if specified
 if [[ -n "$DOTFILES_REPO" ]]; then
     echo "Setting up dotfiles from: $DOTFILES_REPO"
-    # Add github.com to known_hosts
-    sudo -u tonka -H ssh-keyscan github.com >> /Users/tonka/.ssh/known_hosts 2>/dev/null
-
-    # Make SSH agent socket accessible to tonka user
-    if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-        chmod 777 "$(dirname "$SSH_AUTH_SOCK")"
-        chmod 777 "$SSH_AUTH_SOCK"
-    fi
-
-    sudo --preserve-env=SSH_AUTH_SOCK -u tonka -H git clone "$DOTFILES_REPO" /Users/tonka/.dotfiles
+    sudo -u tonka -H git clone "$DOTFILES_REPO" /Users/tonka/.dotfiles
     if [[ -f /Users/tonka/.dotfiles/setup.sh ]]; then
         echo "Running dotfiles setup.sh..."
-        sudo --preserve-env=SSH_AUTH_SOCK -u tonka -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'
+        sudo -u tonka -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'
     else
         echo "Warning: No setup.sh found in dotfiles repo"
     fi
