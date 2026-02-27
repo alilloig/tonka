@@ -15,6 +15,7 @@ fi
 
 # Set defaults for configurable values (after config file is loaded)
 TONKA_BASE_IMAGE="${TONKA_BASE_IMAGE:-ghcr.io/cirruslabs/macos-tahoe-xcode:latest}"
+TONKA_DISK_SIZE="${TONKA_DISK_SIZE:-}"
 
 # Get GitHub token from gh CLI if not set
 if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh &>/dev/null; then
@@ -139,6 +140,10 @@ ensure_vm() {
     if ! vm_exists "$VM_NAME"; then
         log_info "Creating tonka VM from base..."
         tart clone "$BASE_VM_NAME" "$VM_NAME"
+        if [[ -n "$TONKA_DISK_SIZE" ]]; then
+            log_info "Setting disk size to ${TONKA_DISK_SIZE}GB..."
+            tart set "$VM_NAME" --disk-size "$TONKA_DISK_SIZE"
+        fi
     fi
     if ! vm_is_running "$VM_NAME"; then
         log_info "Starting tonka VM..."
@@ -263,6 +268,10 @@ create_base_vm() {
     # Clone the base macOS image
     log_info "Cloning $TONKA_BASE_IMAGE..."
     tart clone "$TONKA_BASE_IMAGE" "$BASE_VM_NAME"
+    if [[ -n "$TONKA_DISK_SIZE" ]]; then
+        log_info "Setting disk size to ${TONKA_DISK_SIZE}GB..."
+        tart set "$BASE_VM_NAME" --disk-size "$TONKA_DISK_SIZE"
+    fi
 
     log_info "Starting base VM for configuration..."
     tart run --no-graphics "$BASE_VM_NAME" &
