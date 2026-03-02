@@ -80,6 +80,9 @@ Config file: `~/.tonka.conf` (sourced as shell script)
 
 Variables (can be set in config file or environment):
 - `TONKA_BASE_IMAGE` - Tart image to use for base VM (default: `ghcr.io/cirruslabs/macos-tahoe-xcode:latest`)
+- `TONKA_CPU` - Number of VM CPUs (default: host CPU count)
+- `TONKA_MEMORY` - VM memory in MB (default: 5/8 of host memory)
+- `TONKA_DISK_SIZE` - VM disk size in GB (e.g., `512`)
 - `TONKA_DOTFILES_REPO` - Git URL of your dotfiles repo (should have `setup.sh` at root)
 - `TONKA_TOOLS` - Space-separated list of tools to install: `rust`, `go`, `nodejs`, `python`
 - `GITHUB_TOKEN` - Passed to VM for GitHub CLI authentication (auto-detected from `gh auth token` if not set)
