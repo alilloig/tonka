@@ -718,10 +718,34 @@ cmd_diff_helper() {
         die "Usage: tonka $git_cmd <project>"
     fi
 
-    cmd_sync
+    ensure_vm
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    # Find which repo and branch this project belongs to
+    local project_info
+    project_info=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "cd ~/projects/$project_name 2>/dev/null && echo \"\$(git rev-parse --path-format=absolute --git-common-dir):\$(git branch --show-current)\"" 2>/dev/null) || die "Project '$project_name' not found"
+    local repo_path="${project_info%:*}"
+    local branch_name="${project_info#*:}"
+    local repo_name
+    repo_name=$(basename "$(dirname "$repo_path")")
+
+    # Find the local repo with the same name
+    local local_repo
+    local_repo=$(git rev-parse --show-toplevel 2>/dev/null) || true
+    if [[ "$(basename "$local_repo")" != "$repo_name" ]]; then
+        die "Not in the '$repo_name' repository locally"
+    fi
+
+    # Sync the repo
+    log_info "Syncing from VM repo '$repo_name'..."
+    GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i $SSH_KEY" \
+        git -C "$local_repo" fetch "$TART_USER@$ip:repos/$repo_name" '+refs/heads/*:refs/remotes/tonka/*'
+
     local merge_base
-    merge_base=$(git merge-base origin/main "tonka/$project_name")
-    git "$git_cmd" "$merge_base..tonka/$project_name"
+    merge_base=$(git -C "$local_repo" merge-base origin/main "tonka/$branch_name")
+    git -C "$local_repo" "$git_cmd" "$merge_base..tonka/$branch_name"
 }
 
 cmd_diff() {
