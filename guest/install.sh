@@ -122,7 +122,14 @@ fi
 echo "Enabling SSH..."
 sudo systemsetup -setremotelogin on
 
-# Clone and run dotfiles if specified (uses SSH key for personal GitHub)
+# Configure GitHub CLI and git credential helper (must happen before dotfiles clone)
+if [[ -n "$GITHUB_TOKEN" ]]; then
+    echo "Configuring GitHub CLI authentication..."
+    sudo -u "$TUSER" -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
+    sudo -u "$TUSER" -H /opt/homebrew/bin/gh auth setup-git
+fi
+
+# Clone and run dotfiles if specified (needs gh auth for HTTPS repos)
 if [[ -n "$DOTFILES_REPO" ]]; then
     echo "Setting up dotfiles from: $DOTFILES_REPO"
     sudo -u "$TUSER" -H git clone "$DOTFILES_REPO" /Users/$TUSER/.dotfiles
@@ -134,13 +141,6 @@ if [[ -n "$DOTFILES_REPO" ]]; then
     fi
 else
     echo "No TONKA_DOTFILES_REPO set, skipping dotfiles setup"
-fi
-
-# Configure GitHub CLI and git credential helper (for work repos)
-if [[ -n "$GITHUB_TOKEN" ]]; then
-    echo "Configuring GitHub CLI authentication..."
-    sudo -u "$TUSER" -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
-    sudo -u "$TUSER" -H /opt/homebrew/bin/gh auth setup-git
 fi
 
 # Clean up
