@@ -59,6 +59,7 @@ Commands:
   sync                      Fetch branches from VM repo to current local repo
   sh [project]              SSH into VM (optionally into a project)
   cl <project>              Run Claude in a project
+  cursor <project>          Open project in Cursor/VS Code via SSH
   start                     Start the tonka VM
   stop                      Stop the tonka VM
   list                      List repos and projects
@@ -72,6 +73,7 @@ Examples:
   tonka cp ~/myfile.txt ~/projects/myproject/
   tonka sh feature-branch
   tonka cl feature-branch
+  tonka cursor feature-branch
 EOF
 }
 
@@ -79,6 +81,52 @@ ensure_ssh_key() {
     if [[ ! -f "$SSH_KEY" ]]; then
         log_info "Generating SSH key pair for tonka..."
         ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "tonka"
+    fi
+}
+
+update_ssh_config() {
+    local ip="$1"
+    local ssh_config="$HOME/.ssh/config"
+    local host_block="Host tonka
+    HostName $ip
+    User $TART_USER
+    IdentityFile $SSH_KEY
+    StrictHostKeyChecking no"
+
+    # Ensure .ssh directory exists
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+
+    if [[ ! -f "$ssh_config" ]]; then
+        # No config file exists, offer to create it
+        read -p "Create ~/.ssh/config with tonka host? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo "$host_block" > "$ssh_config"
+            chmod 600 "$ssh_config"
+            log_info "Created ~/.ssh/config with tonka host"
+        fi
+        return
+    fi
+
+    if ! grep -q "^Host tonka$" "$ssh_config" 2>/dev/null; then
+        # Config exists but no tonka host, offer to add it
+        read -p "Add tonka host to ~/.ssh/config? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo -e "\n$host_block" >> "$ssh_config"
+            log_info "Added tonka host to ~/.ssh/config"
+        fi
+        return
+    fi
+
+    # Host exists, update IP if changed
+    local current_ip
+    current_ip=$(grep -A1 "^Host tonka$" "$ssh_config" | grep HostName | awk '{print $2}')
+    if [[ "$current_ip" != "$ip" ]]; then
+        # Update the HostName for tonka host
+        sed -i '' '/^Host tonka$/,/^Host /{s/^[[:space:]]*HostName .*/    HostName '"$ip"'/;}' "$ssh_config"
+        log_info "Updated tonka IP in ~/.ssh/config"
     fi
 }
 
@@ -162,7 +210,13 @@ ensure_vm() {
         local ip
         ip=$(wait_for_vm_ip "$VM_NAME")
         wait_for_ssh "$ip"
+        update_ssh_config "$ip"
         log_info "VM ready at $ip"
+    else
+        # VM already running, still update SSH config in case IP changed
+        local ip
+        ip=$(get_vm_ip "$VM_NAME")
+        update_ssh_config "$ip"
     fi
 }
 
@@ -611,6 +665,50 @@ cmd_cl() {
         "cd ~/projects/$project_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
 }
 
+cmd_cursor() {
+    local project_name="${1:-}"
+    if [[ -z "$project_name" ]]; then
+        die "Usage: tonka cursor <project>"
+    fi
+
+    ensure_vm
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+
+    # Check if project exists
+    if ! ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" "test -d ~/projects/$project_name" 2>/dev/null; then
+        die "Project '$project_name' not found"
+    fi
+
+    # Find editor: prefer cursor, fall back to code
+    local editor=""
+    local cursor_app="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+    local code_app="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+
+    if command -v cursor &>/dev/null; then
+        editor="cursor"
+    elif [[ -x "$cursor_app" ]]; then
+        editor="$cursor_app"
+    elif command -v code &>/dev/null; then
+        editor="code"
+        log_warn "Cursor not found, using VS Code"
+    elif [[ -x "$code_app" ]]; then
+        editor="$code_app"
+        log_warn "Cursor not found, using VS Code"
+    else
+        die "Neither Cursor nor VS Code found. Install one of them."
+    fi
+
+    # Use tonka SSH alias if configured, otherwise fall back to user@ip
+    local ssh_host="$TART_USER@$ip"
+    if grep -q "^Host tonka$" "$HOME/.ssh/config" 2>/dev/null; then
+        ssh_host="tonka"
+    fi
+
+    log_info "Opening $project_name in $editor via SSH..."
+    "$editor" --remote "ssh-remote+$ssh_host" "/Users/$TART_USER/projects/$project_name"
+}
+
 cmd_rebuild_base() {
     if vm_exists "$BASE_VM_NAME"; then
         if vm_is_running "$BASE_VM_NAME"; then
@@ -723,6 +821,10 @@ main() {
         cl)
             shift
             cmd_cl "$@"
+            ;;
+        cursor)
+            shift
+            cmd_cursor "$@"
             ;;
         cleanup)
             cmd_cleanup
