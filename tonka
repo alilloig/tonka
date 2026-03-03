@@ -60,6 +60,8 @@ Commands:
   sh [project]              SSH into VM (optionally into a project)
   cl <project>              Run Claude in a project
   cursor <project>          Open project in Cursor/VS Code via SSH
+  diff <project>            Sync and diff project against origin/main
+  difftool <project>        Sync and open difftool for project against origin/main
   start                     Start the tonka VM
   stop                      Stop the tonka VM
   list                      List repos and projects
@@ -709,6 +711,27 @@ cmd_cursor() {
     "$editor" --remote "ssh-remote+$ssh_host" "/Users/$TART_USER/projects/$project_name"
 }
 
+cmd_diff_helper() {
+    local git_cmd="$1"
+    local project_name="${2:-}"
+    if [[ -z "$project_name" ]]; then
+        die "Usage: tonka $git_cmd <project>"
+    fi
+
+    cmd_sync
+    local merge_base
+    merge_base=$(git merge-base origin/main "tonka/$project_name")
+    git "$git_cmd" "$merge_base..tonka/$project_name"
+}
+
+cmd_diff() {
+    cmd_diff_helper diff "$@"
+}
+
+cmd_difftool() {
+    cmd_diff_helper difftool "$@"
+}
+
 cmd_rebuild_base() {
     if vm_exists "$BASE_VM_NAME"; then
         if vm_is_running "$BASE_VM_NAME"; then
@@ -825,6 +848,14 @@ main() {
         cursor)
             shift
             cmd_cursor "$@"
+            ;;
+        diff)
+            shift
+            cmd_diff "$@"
+            ;;
+        difftool)
+            shift
+            cmd_difftool "$@"
             ;;
         cleanup)
             cmd_cleanup
