@@ -10,7 +10,8 @@ Ephemeral tart-based sandboxes for running Claude Code with `--dangerously-skip-
 
 - **No shared volumes** - Code lives entirely inside the VM
 - **Automatic sync** of
-  - Claude settings, credentials, and plugins
+  - Claude settings, global instructions (`CLAUDE.md`), permissions (`settings.local.json`), skills, commands, and hooks
+  - Claude credentials and plugins
   - GitHub credentials for `gh` and `git`
 - **Dotfiles support** - Installs your dotfiles repo automatically
 - **Brew** - Automatically `brew install`s everything you have installed on the host OS
@@ -66,6 +67,9 @@ tonka cleanup
 
 # Rebuild base VM (after config changes)
 tonka rebuild-base
+
+# Diagnose sync state
+tonka doctor
 ```
 
 ## How It Works

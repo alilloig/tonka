@@ -67,6 +67,7 @@ Commands:
   list                      List repos and projects
   cleanup                   Remove merged worktrees
   rebuild-base              Rebuild the base VM from scratch
+  doctor                    Diagnose sync state between host and VM
 
 Examples:
   tonka new-repo ~/dev/myproject
@@ -222,47 +223,86 @@ ensure_vm() {
     fi
 }
 
+sync_file() {
+    local src="$1"
+    local dest="$2"
+    local ip="$3"
+    local ssh_opts="$4"
+    local local_hash remote_hash
+    local_hash=$(md5 -q "$src")
+    remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q $dest 2>/dev/null" || echo "")
+    if [[ "$local_hash" != "$remote_hash" ]]; then
+        if scp $ssh_opts "$src" "$TART_USER@$ip:$dest"; then
+            changed=true
+        else
+            log_warn "Failed to sync $(basename "$src")"
+            ((sync_errors++)) || true
+        fi
+    fi
+}
+
+sync_dir() {
+    local src="$1"
+    local dest_parent="$2"
+    local ip="$3"
+    local ssh_opts="$4"
+    local dir_name local_hash remote_hash
+    dir_name=$(basename "$src")
+    local_hash=$(find -H "$src" -type f -not -name '.DS_Store' -exec md5 -q {} \; | sort | md5 -q)
+    remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ${dest_parent}/${dir_name} -type f -not -name '.DS_Store' -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
+    if [[ "$local_hash" != "$remote_hash" ]]; then
+        if scp -r $ssh_opts "$src" "$TART_USER@$ip:$dest_parent/"; then
+            changed=true
+        else
+            log_warn "Failed to sync $dir_name/"
+            ((sync_errors++)) || true
+        fi
+    fi
+}
+
 sync_claude_settings() {
     local ip
     ip=$(get_vm_ip "$VM_NAME")
     local ssh_opts="-o StrictHostKeyChecking=no -i $SSH_KEY"
     local changed=false
+    local sync_errors=0
 
-    ssh $ssh_opts "$TART_USER@$ip" "mkdir -p ~/.claude"
+    ssh $ssh_opts "$TART_USER@$ip" "mkdir -p ~/.claude ~/.config/gh"
 
-    # Sync settings.json if changed
+    # Sync settings.json
     if [[ -f "$HOME/.claude/settings.json" ]]; then
-        local local_hash remote_hash
-        local_hash=$(md5 -q "$HOME/.claude/settings.json")
-        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/settings.json 2>/dev/null" || echo "")
-        if [[ "$local_hash" != "$remote_hash" ]]; then
-            scp $ssh_opts "$HOME/.claude/settings.json" "$TART_USER@$ip":~/.claude/settings.json
-            changed=true
-        fi
+        sync_file "$HOME/.claude/settings.json" "~/.claude/settings.json" "$ip" "$ssh_opts"
     fi
 
-    # Sync skills if changed
+    # Sync CLAUDE.md (global instructions)
+    if [[ -f "$HOME/.claude/CLAUDE.md" ]]; then
+        sync_file "$HOME/.claude/CLAUDE.md" "~/.claude/CLAUDE.md" "$ip" "$ssh_opts"
+    fi
+
+    # Sync settings.local.json (permissions allowlist)
+    if [[ -f "$HOME/.claude/settings.local.json" ]]; then
+        sync_file "$HOME/.claude/settings.local.json" "~/.claude/settings.local.json" "$ip" "$ssh_opts"
+    fi
+
+    # Sync skills/
     if [[ -d "$HOME/.claude/skills" ]]; then
-        local local_hash remote_hash
-        local_hash=$(find "$HOME/.claude/skills" -type f -exec md5 -q {} \; | sort | md5 -q)
-        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/skills -type f -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
-        if [[ "$local_hash" != "$remote_hash" ]]; then
-            scp -r $ssh_opts "$HOME/.claude/skills" "$TART_USER@$ip":~/.claude/
-            changed=true
-        fi
+        sync_dir "$HOME/.claude/skills" "~/.claude" "$ip" "$ssh_opts"
+    fi
+
+    # Sync commands/
+    if [[ -d "$HOME/.claude/commands" ]]; then
+        sync_dir "$HOME/.claude/commands" "~/.claude" "$ip" "$ssh_opts"
+    fi
+
+    # Sync hooks/
+    if [[ -d "$HOME/.claude/hooks" ]]; then
+        sync_dir "$HOME/.claude/hooks" "~/.claude" "$ip" "$ssh_opts"
+        ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/hooks -name '*.sh' -exec chmod +x {} \;" 2>/dev/null || true
     fi
 
     # Sync gh auth credentials
     if [[ -f "$HOME/.config/gh/hosts.yml" ]]; then
-        local local_hash remote_hash
-        local_hash=$(md5 -q "$HOME/.config/gh/hosts.yml")
-        remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.config/gh/hosts.yml 2>/dev/null" || echo "")
-        if [[ "$local_hash" != "$remote_hash" ]]; then
-            log_info "Syncing gh credentials..."
-            ssh $ssh_opts "$TART_USER@$ip" "mkdir -p ~/.config/gh"
-            scp $ssh_opts "$HOME/.config/gh/hosts.yml" "$TART_USER@$ip":~/.config/gh/hosts.yml
-            changed=true
-        fi
+        sync_file "$HOME/.config/gh/hosts.yml" "~/.config/gh/hosts.yml" "$ip" "$ssh_opts"
     fi
 
     # Ensure git uses gh credential helper (clear xcode's osxkeychain first)
@@ -297,12 +337,16 @@ sync_claude_settings() {
     # Copy ~/.claude.json only if it doesn't exist (for initial onboarding state)
     if [[ -f "$HOME/.claude.json" ]]; then
         if ! ssh $ssh_opts "$TART_USER@$ip" "test -f ~/.claude.json" 2>/dev/null; then
-            scp $ssh_opts "$HOME/.claude.json" "$TART_USER@$ip":~/.claude.json
-            changed=true
+            if scp $ssh_opts "$HOME/.claude.json" "$TART_USER@$ip:~/.claude.json"; then
+                changed=true
+            else
+                log_warn "Failed to sync .claude.json"
+                ((sync_errors++)) || true
+            fi
         fi
     fi
 
-    # Sync credentials from Keychain if changed
+    # Sync credentials from Keychain
     local creds
     creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo "")
     if [[ -n "$creds" ]]; then
@@ -310,12 +354,36 @@ sync_claude_settings() {
         local_hash=$(echo "$creds" | md5 -q)
         remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/.credentials.json 2>/dev/null" || echo "")
         if [[ "$local_hash" != "$remote_hash" ]]; then
-            ssh $ssh_opts "$TART_USER@$ip" "echo '$creds' > ~/.claude/.credentials.json"
-            changed=true
+            if echo "$creds" | ssh $ssh_opts "$TART_USER@$ip" "cat > ~/.claude/.credentials.json"; then
+                changed=true
+            else
+                log_warn "Failed to sync credentials"
+                ((sync_errors++)) || true
+            fi
         fi
     fi
 
-    if [[ "$changed" == "true" ]]; then
+    # Post-sync verification: check items present on host exist on VM
+    local verify_cmds=""
+    [[ -f "$HOME/.claude/settings.json" ]] && verify_cmds="${verify_cmds}[ -f ~/.claude/settings.json ] || printf ' settings.json';"
+    [[ -f "$HOME/.claude/CLAUDE.md" ]] && verify_cmds="${verify_cmds}[ -f ~/.claude/CLAUDE.md ] || printf ' CLAUDE.md';"
+    [[ -f "$HOME/.claude/settings.local.json" ]] && verify_cmds="${verify_cmds}[ -f ~/.claude/settings.local.json ] || printf ' settings.local.json';"
+    [[ -d "$HOME/.claude/skills" ]] && verify_cmds="${verify_cmds}[ -d ~/.claude/skills ] || printf ' skills/';"
+    [[ -d "$HOME/.claude/commands" ]] && verify_cmds="${verify_cmds}[ -d ~/.claude/commands ] || printf ' commands/';"
+    [[ -d "$HOME/.claude/hooks" ]] && verify_cmds="${verify_cmds}[ -d ~/.claude/hooks ] || printf ' hooks/';"
+    [[ -n "$creds" ]] && verify_cmds="${verify_cmds}[ -f ~/.claude/.credentials.json ] || printf ' .credentials.json';"
+
+    if [[ -n "$verify_cmds" ]]; then
+        local missing
+        missing=$(ssh $ssh_opts "$TART_USER@$ip" "$verify_cmds" 2>/dev/null || echo "")
+        if [[ -n "$missing" ]]; then
+            log_warn "Missing in VM after sync:$missing"
+        fi
+    fi
+
+    if [[ $sync_errors -gt 0 ]]; then
+        log_warn "$sync_errors sync item(s) failed. Run 'tonka doctor' to diagnose."
+    elif [[ "$changed" == "true" ]]; then
         log_info "Claude settings synced."
     fi
 }
@@ -387,6 +455,22 @@ create_base_vm() {
     if [[ -d "$HOME/.claude/skills" ]]; then
         log_info "Copying Claude skills..."
         sshpass -p admin scp -r -o StrictHostKeyChecking=no "$HOME/.claude/skills" admin@"$ip":/tmp/claude_skills
+    fi
+    if [[ -f "$HOME/.claude/CLAUDE.md" ]]; then
+        log_info "Copying Claude global instructions..."
+        sshpass -p admin scp -o StrictHostKeyChecking=no "$HOME/.claude/CLAUDE.md" admin@"$ip":/tmp/claude_claude_md
+    fi
+    if [[ -f "$HOME/.claude/settings.local.json" ]]; then
+        log_info "Copying Claude local settings..."
+        sshpass -p admin scp -o StrictHostKeyChecking=no "$HOME/.claude/settings.local.json" admin@"$ip":/tmp/claude_settings_local.json
+    fi
+    if [[ -d "$HOME/.claude/commands" ]]; then
+        log_info "Copying Claude commands..."
+        sshpass -p admin scp -r -o StrictHostKeyChecking=no "$HOME/.claude/commands" admin@"$ip":/tmp/claude_commands
+    fi
+    if [[ -d "$HOME/.claude/hooks" ]]; then
+        log_info "Copying Claude hooks..."
+        sshpass -p admin scp -r -o StrictHostKeyChecking=no "$HOME/.claude/hooks" admin@"$ip":/tmp/claude_hooks
     fi
 
     # Run install script with config
@@ -786,6 +870,145 @@ cmd_rebuild_base() {
     fi
 }
 
+cmd_doctor() {
+    local issues=0
+    local ssh_opts="-o StrictHostKeyChecking=no -i $SSH_KEY"
+
+    echo "=== Tonka Doctor ==="
+    echo ""
+
+    # Host-side file checks
+    echo "Host configuration:"
+    local host_files="settings.json CLAUDE.md settings.local.json"
+    for f in $host_files; do
+        local path="$HOME/.claude/$f"
+        if [[ -f "$path" ]]; then
+            if [[ -L "$path" ]]; then
+                echo "  OK      $f (-> $(readlink "$path"))"
+            else
+                echo "  OK      $f"
+            fi
+        else
+            echo "  MISSING $f"
+            ((issues++)) || true
+        fi
+    done
+
+    # Host-side directory checks
+    local host_dirs="skills commands hooks"
+    for d in $host_dirs; do
+        local path="$HOME/.claude/$d"
+        if [[ -d "$path" ]]; then
+            local count
+            count=$(find -H "$path" -type f -not -name '.DS_Store' | wc -l | tr -d ' ')
+            if [[ -L "$path" ]]; then
+                echo "  OK      $d/ ($count files, -> $(readlink "$path"))"
+            else
+                echo "  OK      $d/ ($count files)"
+            fi
+        else
+            echo "  MISSING $d/"
+            ((issues++)) || true
+        fi
+    done
+
+    echo ""
+    echo "Credentials:"
+    if security find-generic-password -s "Claude Code-credentials" -w &>/dev/null; then
+        echo "  OK      Keychain 'Claude Code-credentials'"
+    else
+        echo "  MISSING Keychain 'Claude Code-credentials'"
+        ((issues++)) || true
+    fi
+    if [[ -f "$HOME/.config/gh/hosts.yml" ]]; then
+        echo "  OK      gh credentials"
+    else
+        echo "  MISSING gh credentials"
+        ((issues++)) || true
+    fi
+
+    # VM checks
+    echo ""
+    if ! vm_is_running "$VM_NAME"; then
+        echo "VM: not running (start with 'tonka start' for full diagnostics)"
+    else
+        local ip
+        ip=$(get_vm_ip "$VM_NAME")
+        echo "VM ($ip):"
+
+        # Compare files
+        for f in $host_files; do
+            if [[ ! -f "$HOME/.claude/$f" ]]; then
+                continue
+            fi
+            local local_hash remote_hash
+            local_hash=$(md5 -q "$HOME/.claude/$f")
+            remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/$f 2>/dev/null" || echo "")
+            if [[ -z "$remote_hash" ]]; then
+                echo "  MISSING $f"
+                ((issues++)) || true
+            elif [[ "$local_hash" == "$remote_hash" ]]; then
+                echo "  MATCH   $f"
+            else
+                echo "  STALE   $f"
+                ((issues++)) || true
+            fi
+        done
+
+        # Compare directories
+        for d in $host_dirs; do
+            if [[ ! -d "$HOME/.claude/$d" ]]; then
+                continue
+            fi
+            local local_hash remote_hash
+            local_hash=$(find -H "$HOME/.claude/$d" -type f -not -name '.DS_Store' -exec md5 -q {} \; | sort | md5 -q)
+            remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "find ~/.claude/$d -type f -not -name '.DS_Store' -exec md5 -q {} \; 2>/dev/null | sort | md5 -q" || echo "")
+            if [[ -z "$remote_hash" ]]; then
+                echo "  MISSING $d/"
+                ((issues++)) || true
+            elif [[ "$local_hash" == "$remote_hash" ]]; then
+                echo "  MATCH   $d/"
+            else
+                echo "  STALE   $d/"
+                ((issues++)) || true
+            fi
+        done
+
+        # Compare credentials (host Keychain vs VM file)
+        local creds
+        creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo "")
+        if [[ -n "$creds" ]]; then
+            local local_hash remote_hash
+            local_hash=$(echo "$creds" | md5 -q)
+            remote_hash=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q ~/.claude/.credentials.json 2>/dev/null" || echo "")
+            if [[ -z "$remote_hash" ]]; then
+                echo "  MISSING .credentials.json"
+                ((issues++)) || true
+            elif [[ "$local_hash" == "$remote_hash" ]]; then
+                echo "  MATCH   .credentials.json (Keychain)"
+            else
+                echo "  STALE   .credentials.json (Keychain)"
+                ((issues++)) || true
+            fi
+        fi
+
+        # Check git credential helper
+        if ssh $ssh_opts "$TART_USER@$ip" "git config --global --get credential.helper | grep -q 'gh auth'" 2>/dev/null; then
+            echo "  OK      git credential helper"
+        else
+            echo "  MISSING git credential helper"
+            ((issues++)) || true
+        fi
+    fi
+
+    echo ""
+    if [[ $issues -eq 0 ]]; then
+        log_info "No issues found."
+    else
+        log_warn "$issues issue(s) found. Run 'tonka cl <project>' to sync."
+    fi
+}
+
 cmd_default() {
     ensure_vm
     local ip
@@ -886,6 +1109,9 @@ main() {
             ;;
         rebuild-base)
             cmd_rebuild_base
+            ;;
+        doctor)
+            cmd_doctor
             ;;
         -h|--help|help)
             usage

@@ -117,6 +117,31 @@ if [[ -d /tmp/claude_skills ]]; then
     sudo cp -r /tmp/claude_skills /Users/$TUSER/.claude/skills
     sudo chown -R "$TUSER:staff" /Users/$TUSER/.claude
 fi
+if [[ -f /tmp/claude_claude_md ]]; then
+    echo "Configuring Claude global instructions..."
+    sudo mkdir -p /Users/$TUSER/.claude
+    sudo cp /tmp/claude_claude_md /Users/$TUSER/.claude/CLAUDE.md
+    sudo chown -R "$TUSER:staff" /Users/$TUSER/.claude
+fi
+if [[ -f /tmp/claude_settings_local.json ]]; then
+    echo "Configuring Claude local settings..."
+    sudo mkdir -p /Users/$TUSER/.claude
+    sudo cp /tmp/claude_settings_local.json /Users/$TUSER/.claude/settings.local.json
+    sudo chown -R "$TUSER:staff" /Users/$TUSER/.claude
+fi
+if [[ -d /tmp/claude_commands ]]; then
+    echo "Configuring Claude commands..."
+    sudo mkdir -p /Users/$TUSER/.claude
+    sudo cp -r /tmp/claude_commands /Users/$TUSER/.claude/commands
+    sudo chown -R "$TUSER:staff" /Users/$TUSER/.claude
+fi
+if [[ -d /tmp/claude_hooks ]]; then
+    echo "Configuring Claude hooks..."
+    sudo mkdir -p /Users/$TUSER/.claude
+    sudo cp -r /tmp/claude_hooks /Users/$TUSER/.claude/hooks
+    sudo find /Users/$TUSER/.claude/hooks -name '*.sh' -exec chmod +x {} \;
+    sudo chown -R "$TUSER:staff" /Users/$TUSER/.claude
+fi
 
 # Enable Remote Login (SSH)
 echo "Enabling SSH..."
@@ -156,6 +181,7 @@ fi
 
 # Clean up
 echo "Cleaning up..."
-rm -f /tmp/tonka.pub /tmp/tonka_key /tmp/install.sh
+rm -f /tmp/tonka.pub /tmp/tonka_key /tmp/install.sh /tmp/claude_settings.json /tmp/claude_claude_md /tmp/claude_settings_local.json
+rm -rf /tmp/claude_skills /tmp/claude_commands /tmp/claude_hooks
 
 echo "=== Base VM setup complete ==="

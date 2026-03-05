@@ -360,6 +360,7 @@ bash -x setup.sh       # run with debug tracing
 | `tonka start` | Start the VM (if stopped) |
 | `tonka stop` | Stop the VM |
 | `tonka rebuild-base` | Rebuild the base VM from scratch |
+| `tonka doctor` | Diagnose sync state between host and VM (checks config, credentials, hashes) |
 
 ---
 
@@ -395,12 +396,18 @@ If `tonka-vm` is not running, Tonka starts it headless, waits 15 seconds for ini
 ### Phase 4 — Sync settings (on `new` and `cl` commands)
 Before launching Claude, Tonka syncs these items from host to VM (skipping unchanged items via MD5 hash comparison):
 - `~/.claude/settings.json`
+- `~/.claude/CLAUDE.md` (global instructions — follows symlinks)
+- `~/.claude/settings.local.json` (permissions allowlist — follows symlinks)
 - `~/.claude/skills/` (entire directory)
+- `~/.claude/commands/` (custom slash commands)
+- `~/.claude/hooks/` (hook scripts — preserves executability)
 - `~/.config/gh/hosts.yml` (GitHub CLI credentials)
 - Git credential helper configuration
 - Claude plugins from `~/.claude/plugins/installed_plugins.json`
 - `~/.claude.json` (onboarding state — only if missing in VM)
 - macOS Keychain entry `"Claude Code-credentials"` → `~/.claude/.credentials.json`
+
+Sync errors are counted and reported. Post-sync verification warns about critical items missing in the VM.
 
 ---
 
