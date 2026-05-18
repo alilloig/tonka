@@ -138,10 +138,12 @@ sudo -u "$TUSER" -H git config --global credential.helper ""
 sudo -u "$TUSER" -H git config --global --add credential.helper "/opt/homebrew/bin/gh auth git-credential"
 
 # If the host forwarded a token, also seed the guest's gh auth state so the
-# dotfiles clone in this same script can authenticate immediately.
+# dotfiles clone in this same script can authenticate immediately. Pipe the
+# token via stdin so it is never interpolated into a shell string — same
+# quote-safe pattern used for the Keychain credential write on the host.
 if [[ -n "$GITHUB_TOKEN" ]]; then
     echo "Seeding GitHub CLI authentication with host token..."
-    sudo -u "$TUSER" -H /bin/bash -c "echo '$GITHUB_TOKEN' | /opt/homebrew/bin/gh auth login --with-token"
+    printf '%s\n' "$GITHUB_TOKEN" | sudo -u "$TUSER" -H /opt/homebrew/bin/gh auth login --with-token
 else
     echo "No GITHUB_TOKEN forwarded — guest gh auth will be populated on first sync_claude_settings via hosts.yml. Dotfiles clone may fail if dotfiles repo is private."
 fi
@@ -168,16 +170,27 @@ ssh_to_https() {
     echo "$url"
 }
 
-# Clone and run dotfiles if specified
+# Clone and run dotfiles if specified. Failures here are warned about but
+# do NOT abort the base build — a private dotfiles repo combined with a
+# token-less host (web-flow / passkey-only gh auth) would otherwise kill
+# the install before Phase D ever runs. The user can re-run setup.sh
+# later with: tonka sh && cd ~/.dotfiles && ./setup.sh
 if [[ -n "$DOTFILES_REPO" ]]; then
     DOTFILES_URL=$(ssh_to_https "$DOTFILES_REPO")
     echo "Setting up dotfiles from: $DOTFILES_URL"
-    sudo -u "$TUSER" -H git clone "$DOTFILES_URL" /Users/$TUSER/.dotfiles
-    if [[ -f /Users/$TUSER/.dotfiles/setup.sh ]]; then
-        echo "Running dotfiles setup.sh..."
-        sudo -u "$TUSER" -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'
+    if sudo -u "$TUSER" -H git clone "$DOTFILES_URL" /Users/$TUSER/.dotfiles; then
+        if [[ -f /Users/$TUSER/.dotfiles/setup.sh ]]; then
+            echo "Running dotfiles setup.sh..."
+            if ! sudo -u "$TUSER" -H /bin/bash -c 'cd ~/.dotfiles && ./setup.sh'; then
+                echo "Warning: dotfiles setup.sh failed. Re-run with: tonka sh && cd ~/.dotfiles && ./setup.sh"
+            fi
+        else
+            echo "Warning: No setup.sh found in dotfiles repo"
+        fi
     else
-        echo "Warning: No setup.sh found in dotfiles repo"
+        echo "Warning: dotfiles clone failed (auth not yet established?)."
+        echo "After base build, run 'gh auth login' on host, then 'tonka sh' and clone manually:"
+        echo "  git clone $DOTFILES_URL ~/.dotfiles && cd ~/.dotfiles && ./setup.sh"
     fi
 else
     echo "No TONKA_DOTFILES_REPO set, skipping dotfiles setup"
