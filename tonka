@@ -384,11 +384,7 @@ sync_claude_settings() {
 
     # Keep the in-guest helpers (tonka-add + /usr/local/etc/tonka.zsh)
     # up to date so existing VMs gain new behaviors without rebuild-base.
-    if ensure_guest_helpers "$ip" "$ssh_opts"; then
-        :
-    else
-        changed=true
-    fi
+    ensure_guest_helpers "$ip" "$ssh_opts" || changed=true
 
     if [[ "$changed" == "true" ]]; then
         log_info "Claude settings synced."
