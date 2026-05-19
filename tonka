@@ -817,7 +817,34 @@ cmd_stop() {
         return
     fi
     log_info "Stopping tonka VM..."
-    tart stop "$VM_NAME"
+    # `tart stop` sends an ACPI shutdown that the macOS guest doesn't
+    # action quickly enough; Tart then force-kills the VM before macOS
+    # has flushed its filesystem buffers, silently losing recent writes
+    # (repos added via `tonka new-repo` / in-VM `add repo`, folders
+    # created via `tonka folder add`, claude session state, etc.).
+    # Trigger an in-guest shutdown first, wait for the VM to actually
+    # halt, and only fall back to `tart stop` if it doesn't.
+    local ip
+    ip=$(get_vm_ip "$VM_NAME")
+    local stopped_gracefully=false
+    if [[ -n "$ip" ]]; then
+        # `sudo shutdown -h +0` is immediate — the ssh connection drops
+        # mid-command and ssh returns non-zero. Don't trust its exit
+        # status; check whether the VM actually halted afterwards.
+        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=yes -i "$SSH_KEY" "$TART_USER@$ip" "sudo shutdown -h +0" &>/dev/null || true
+        local waited=0
+        while vm_is_running "$VM_NAME" && [[ $waited -lt 60 ]]; do
+            sleep 1
+            ((waited++))
+        done
+        if ! vm_is_running "$VM_NAME"; then
+            stopped_gracefully=true
+        fi
+    fi
+    if [[ "$stopped_gracefully" == "false" ]]; then
+        log_warn "In-guest shutdown didn't complete; falling back to tart stop (data loss risk)."
+        tart stop "$VM_NAME"
+    fi
     log_info "VM stopped."
 }
 
