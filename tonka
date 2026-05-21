@@ -652,7 +652,7 @@ cmd_new() {
 
     log_info "Starting Claude in $project_name..."
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-        "cd ~/projects/$project_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+        "cd ~/projects/$project_name && \$SHELL -i -l -c '[ -f ~/.claude.env ] && . ~/.claude.env; ~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
 }
 
 cmd_pr() {
@@ -694,7 +694,7 @@ cmd_pr() {
     if [[ -n "$worktree_path" ]]; then
         log_info "Found existing project at $worktree_path. Starting Claude..."
         ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-            "cd '$worktree_path' && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+            "cd '$worktree_path' && \$SHELL -i -l -c '[ -f ~/.claude.env ] && . ~/.claude.env; ~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
         return
     fi
 
@@ -709,7 +709,7 @@ cmd_pr() {
 
     log_info "Starting Claude in $branch_name..."
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-        "cd ~/projects/$branch_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+        "cd ~/projects/$branch_name && \$SHELL -i -l -c '[ -f ~/.claude.env ] && . ~/.claude.env; ~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
 }
 
 cmd_cp() {
@@ -868,7 +868,7 @@ cmd_cl() {
 
     log_info "Starting Claude in $project_name..."
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
-        "cd ~/projects/$project_name && \$SHELL -i -l -c '~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
+        "cd ~/projects/$project_name && \$SHELL -i -l -c '[ -f ~/.claude.env ] && . ~/.claude.env; ~/.local/bin/claude --dangerously-skip-permissions; echo \"Claude exited. You are still in the tonka VM. Press Ctrl-D to leave.\"; exec \$SHELL -l'"
 }
 
 cmd_cursor() {
