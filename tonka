@@ -89,6 +89,16 @@ Inside the VM (via 'tonka sh'):
 EOF
 }
 
+validate_name() {
+    local what="$1" name="$2"
+    if [[ "$name" == "." || "$name" == ".." ]]; then
+        die "Invalid $what name '$name' (reserved name)"
+    fi
+    if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        die "Invalid $what name '$name' (allowed: A-Z a-z 0-9 . _ -)"
+    fi
+}
+
 ensure_ssh_key() {
     if [[ ! -f "$SSH_KEY" ]]; then
         log_info "Generating SSH key pair for tonka..."
@@ -384,7 +394,7 @@ sync_claude_settings() {
 
     # Keep the in-guest helpers (tonka-add + /usr/local/etc/tonka.zsh)
     # up to date so existing VMs gain new behaviors without rebuild-base.
-    ensure_guest_helpers "$ip" "$ssh_opts" || changed=true
+    ensure_guest_helpers "$ip" "$ssh_opts" || true
 
     if [[ "$changed" == "true" ]]; then
         log_info "Claude settings synced."
@@ -392,51 +402,53 @@ sync_claude_settings() {
 }
 
 # MD5-sync /usr/local/bin/tonka-add and /usr/local/etc/tonka.zsh from this
-# checkout to the running VM. Returns 0 if nothing changed, 1 if it pushed
-# updates (so the caller can flip the "changed" log flag).
+# checkout to the running VM. Best-effort — SSH failures are logged and
+# swallowed so the caller's command is not aborted.
 ensure_guest_helpers() {
     local ip="$1"
     local ssh_opts="$2"
     local src_bin="$SCRIPT_DIR/guest/tonka-add"
     local src_zsh="$SCRIPT_DIR/guest/tonka.zsh"
-    local updated=0
 
     if [[ -f "$src_bin" ]]; then
         local lh rh
         lh=$(md5 -q "$src_bin")
-        rh=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q /usr/local/bin/tonka-add 2>/dev/null" || echo "")
+        rh=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q /usr/local/bin/tonka-add 2>/dev/null" 2>/dev/null || echo "")
         if [[ "$lh" != "$rh" ]]; then
             log_info "Syncing tonka-add helper to VM..."
-            scp $ssh_opts "$src_bin" "$TART_USER@$ip":/tmp/tonka-add
-            ssh $ssh_opts "$TART_USER@$ip" "sudo install -m 0755 -o root -g wheel /tmp/tonka-add /usr/local/bin/tonka-add && rm -f /tmp/tonka-add"
-            updated=1
+            if ! scp $ssh_opts "$src_bin" "$TART_USER@$ip":/tmp/tonka-add 2>/dev/null || \
+               ! ssh $ssh_opts "$TART_USER@$ip" "sudo install -m 0755 -o root -g wheel /tmp/tonka-add /usr/local/bin/tonka-add && rm -f /tmp/tonka-add" 2>/dev/null; then
+                log_warn "Failed to sync tonka-add; will retry on next command."
+                return 0
+            fi
         fi
     fi
 
     if [[ -f "$src_zsh" ]]; then
         local lh rh
         lh=$(md5 -q "$src_zsh")
-        rh=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q /usr/local/etc/tonka.zsh 2>/dev/null" || echo "")
+        rh=$(ssh $ssh_opts "$TART_USER@$ip" "md5 -q /usr/local/etc/tonka.zsh 2>/dev/null" 2>/dev/null || echo "")
         if [[ "$lh" != "$rh" ]]; then
             log_info "Syncing tonka.zsh shell function to VM..."
-            scp $ssh_opts "$src_zsh" "$TART_USER@$ip":/tmp/tonka.zsh
-            ssh $ssh_opts "$TART_USER@$ip" 'sudo mkdir -p /usr/local/etc && sudo install -m 0644 -o root -g wheel /tmp/tonka.zsh /usr/local/etc/tonka.zsh && rm -f /tmp/tonka.zsh'
-            updated=1
+            if ! scp $ssh_opts "$src_zsh" "$TART_USER@$ip":/tmp/tonka.zsh 2>/dev/null || \
+               ! ssh $ssh_opts "$TART_USER@$ip" 'sudo mkdir -p /usr/local/etc && sudo install -m 0644 -o root -g wheel /tmp/tonka.zsh /usr/local/etc/tonka.zsh && rm -f /tmp/tonka.zsh' 2>/dev/null; then
+                log_warn "Failed to sync tonka.zsh; will retry on next command."
+                return 0
+            fi
         fi
         # Ensure /etc/zshrc sources it (idempotent — marker-guarded).
-        if ! ssh $ssh_opts "$TART_USER@$ip" "grep -q TONKA-SHELL-HOOK /etc/zshrc 2>/dev/null"; then
+        if ! ssh $ssh_opts "$TART_USER@$ip" "grep -q TONKA-SHELL-HOOK /etc/zshrc 2>/dev/null" 2>/dev/null; then
             log_info "Wiring tonka.zsh into VM /etc/zshrc..."
             ssh $ssh_opts "$TART_USER@$ip" "sudo tee -a /etc/zshrc >/dev/null <<'EOF'
 
 # TONKA-SHELL-HOOK (managed by tonka — do not edit this block)
 [ -r /usr/local/etc/tonka.zsh ] && . /usr/local/etc/tonka.zsh
 # END-TONKA-SHELL-HOOK
-EOF"
-            updated=1
+EOF" 2>/dev/null || log_warn "Failed to wire tonka.zsh into /etc/zshrc."
         fi
     fi
 
-    return $(( updated == 0 ? 0 : 1 ))
+    return 0
 }
 
 create_base_vm() {
@@ -536,7 +548,20 @@ create_base_vm() {
     sshpass -p admin ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $install_env /tmp/install.sh"
 
     log_info "Stopping base VM..."
-    tart stop "$BASE_VM_NAME"
+    sshpass -p admin ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@"$ip" "sudo shutdown -h +0" &>/dev/null || true
+    log_info "Waiting for base VM to halt (up to 60s)..."
+    local waited=0
+    while vm_is_running "$BASE_VM_NAME" && [[ $waited -lt 60 ]]; do
+        sleep 1
+        ((waited++))
+        if (( waited % 15 == 0 )); then
+            log_info "Still waiting... (${waited}s)"
+        fi
+    done
+    if vm_is_running "$BASE_VM_NAME"; then
+        log_warn "In-guest shutdown didn't complete; falling back to tart stop."
+        tart stop "$BASE_VM_NAME"
+    fi
     wait $vm_pid 2>/dev/null || true
 
     log_info "Base VM '$BASE_VM_NAME' created successfully!"
@@ -548,8 +573,10 @@ cmd_new_repo() {
         die "Usage: tonka new-repo <repo-path>"
     fi
     repo_path="$(cd "$repo_path" && pwd)"
-    if [[ ! -d "$repo_path/.git" ]]; then
-        die "Not a git repository: $repo_path"
+    local repo_toplevel
+    repo_toplevel=$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null) || die "Not a git repository: $repo_path"
+    if [[ "$repo_path" != "$repo_toplevel" ]]; then
+        die "Not a repository root (did you mean $repo_toplevel?): $repo_path"
     fi
     local repo_name
     repo_name="$(basename "$repo_path")"
@@ -581,6 +608,8 @@ cmd_new() {
     if [[ -z "$project_name" ]]; then
         die "Usage: tonka new <project-name> [repo-name]"
     fi
+    validate_name project "$project_name"
+    [[ -n "$repo_name" ]] && validate_name repo "$repo_name"
 
     ensure_vm
     sync_claude_settings
@@ -600,12 +629,19 @@ cmd_new() {
     # hardcoding 'main' — many repos still use 'master' or another name.
     local default_branch
     default_branch=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
-        "git -C ~/repos/$repo_name symbolic-ref --short HEAD 2>/dev/null" | tr -d '\r' || echo main)
+        "git -C ~/repos/$repo_name symbolic-ref --short HEAD 2>/dev/null" | tr -d '\r')
     default_branch="${default_branch:-main}"
+    if [[ ! "$default_branch" =~ ^[A-Za-z0-9/_.-]+$ ]]; then
+        die "Invalid default branch name: $default_branch"
+    fi
 
     log_info "Fetching origin/$default_branch and creating worktree '$project_name'..."
     ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
-        "mkdir -p ~/projects && cd ~/repos/$repo_name && git fetch origin $default_branch && git worktree add ~/projects/$project_name -b $project_name origin/$default_branch && cd ~/projects/$project_name && git push -u origin $project_name"
+        "mkdir -p ~/projects && cd ~/repos/'$repo_name' && git fetch origin '$default_branch' && git worktree add ~/projects/'$project_name' -b '$project_name' 'origin/$default_branch'"
+    if ! ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "cd ~/projects/'$project_name' && git push -u origin '$project_name'" 2>&1; then
+        log_warn "Push failed, but worktree is ready locally in the VM."
+    fi
 
     log_info "Starting Claude in $project_name..."
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
@@ -704,9 +740,7 @@ cmd_folder() {
             src="$(cd "$src" && pwd)"
             local name
             name="$(basename "$src")"
-            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-                die "Folder name '$name' contains characters not allowed (A-Z a-z 0-9 . _ -)"
-            fi
+            validate_name folder "$name"
             ensure_vm
             local ip
             ip=$(get_vm_ip "$VM_NAME")
@@ -762,7 +796,7 @@ cmd_start() {
     local ip ssh_opts
     ip=$(get_vm_ip "$VM_NAME")
     ssh_opts="-o StrictHostKeyChecking=no -i $SSH_KEY"
-    ensure_guest_helpers "$ip" "$ssh_opts" || true
+    ensure_guest_helpers "$ip" "$ssh_opts" || log_warn "Helper sync failed; will retry on next command."
 }
 
 cmd_auth_status() {
@@ -832,10 +866,14 @@ cmd_stop() {
         # mid-command and ssh returns non-zero. Don't trust its exit
         # status; check whether the VM actually halted afterwards.
         ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=yes -i "$SSH_KEY" "$TART_USER@$ip" "sudo shutdown -h +0" &>/dev/null || true
+        log_info "Waiting for VM to halt (up to 60s)..."
         local waited=0
         while vm_is_running "$VM_NAME" && [[ $waited -lt 60 ]]; do
             sleep 1
             ((waited++))
+            if (( waited % 15 == 0 )); then
+                log_info "Still waiting... (${waited}s)"
+            fi
         done
         if ! vm_is_running "$VM_NAME"; then
             stopped_gracefully=true
@@ -995,8 +1033,16 @@ cmd_diff_helper() {
     GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i $SSH_KEY" \
         git -C "$local_repo" fetch "$TART_USER@$ip:repos/$repo_name" '+refs/heads/*:refs/remotes/tonka/*'
 
+    local default_branch
+    default_branch=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "git -C ~/repos/$repo_name symbolic-ref --short HEAD 2>/dev/null" | tr -d '\r')
+    default_branch="${default_branch:-main}"
+    if [[ ! "$default_branch" =~ ^[A-Za-z0-9/_.-]+$ ]]; then
+        die "Invalid default branch name: $default_branch"
+    fi
+
     local merge_base
-    merge_base=$(git -C "$local_repo" merge-base origin/main "tonka/$branch_name")
+    merge_base=$(git -C "$local_repo" merge-base "origin/$default_branch" "tonka/$branch_name")
     git -C "$local_repo" "$git_cmd" "$merge_base..tonka/$branch_name"
 }
 

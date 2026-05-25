@@ -93,8 +93,8 @@ add list
 ```
 
 `add repo` mirrors `tonka new`: it clones into `~/repos/<repo>`, creates a
-worktree at `~/projects/<project>` on branch `<project>` off `origin/main`,
-pushes the branch, and cd's your shell into the worktree.
+worktree at `~/projects/<project>` on branch `<project>` off the repo's
+default branch, pushes the branch, and cd's your shell into the worktree.
 
 ## How It Works
 
