@@ -92,7 +92,9 @@ cmd_repo() {
         echo "tonka-add: warning — failed to push branch '$project' to origin. Worktree is ready locally." >&2
     fi
 
-    [[ -n "${TONKA_ADD_CD_FILE:-}" ]] && printf '%s' "$HOME/projects/$project" > "$TONKA_ADD_CD_FILE"
+    if [[ -n "${TONKA_ADD_CD_FILE:-}" ]]; then
+        printf '%s' "$HOME/projects/$project" > "$TONKA_ADD_CD_FILE"
+    fi
 }
 
 cmd_folder() {
@@ -108,7 +110,9 @@ cmd_folder() {
     fi
     mkdir -p "$HOME/folders/$name"
     echo "Created ~/folders/$name"
-    [[ -n "${TONKA_ADD_CD_FILE:-}" ]] && printf '%s' "$HOME/folders/$name" > "$TONKA_ADD_CD_FILE"
+    if [[ -n "${TONKA_ADD_CD_FILE:-}" ]]; then
+        printf '%s' "$HOME/folders/$name" > "$TONKA_ADD_CD_FILE"
+    fi
 }
 
 cmd_list() {

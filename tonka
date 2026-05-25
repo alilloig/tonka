@@ -384,7 +384,7 @@ sync_claude_settings() {
 
     # Keep the in-guest helpers (tonka-add + /usr/local/etc/tonka.zsh)
     # up to date so existing VMs gain new behaviors without rebuild-base.
-    ensure_guest_helpers "$ip" "$ssh_opts" || changed=true
+    ensure_guest_helpers "$ip" "$ssh_opts"
 
     if [[ "$changed" == "true" ]]; then
         log_info "Claude settings synced."
@@ -436,7 +436,7 @@ EOF"
         fi
     fi
 
-    return $(( updated == 0 ? 0 : 1 ))
+    return 0
 }
 
 create_base_vm() {
@@ -536,7 +536,16 @@ create_base_vm() {
     sshpass -p admin ssh -o StrictHostKeyChecking=no admin@"$ip" "chmod +x /tmp/install.sh && $install_env /tmp/install.sh"
 
     log_info "Stopping base VM..."
-    tart stop "$BASE_VM_NAME"
+    sshpass -p admin ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@"$ip" "sudo shutdown -h +0" &>/dev/null || true
+    local waited=0
+    while vm_is_running "$BASE_VM_NAME" && [[ $waited -lt 60 ]]; do
+        sleep 1
+        ((waited++))
+    done
+    if vm_is_running "$BASE_VM_NAME"; then
+        log_warn "In-guest shutdown didn't complete; falling back to tart stop."
+        tart stop "$BASE_VM_NAME"
+    fi
     wait $vm_pid 2>/dev/null || true
 
     log_info "Base VM '$BASE_VM_NAME' created successfully!"
@@ -548,8 +557,10 @@ cmd_new_repo() {
         die "Usage: tonka new-repo <repo-path>"
     fi
     repo_path="$(cd "$repo_path" && pwd)"
-    if ! git -C "$repo_path" rev-parse --is-inside-work-tree &>/dev/null; then
-        die "Not a git repository: $repo_path"
+    local repo_toplevel
+    repo_toplevel=$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null) || die "Not a git repository: $repo_path"
+    if [[ "$repo_path" != "$repo_toplevel" ]]; then
+        die "Not a repository root (did you mean $repo_toplevel?): $repo_path"
     fi
     local repo_name
     repo_name="$(basename "$repo_path")"
@@ -602,10 +613,13 @@ cmd_new() {
     default_branch=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
         "git -C ~/repos/$repo_name symbolic-ref --short HEAD 2>/dev/null" | tr -d '\r' || echo main)
     default_branch="${default_branch:-main}"
+    if [[ ! "$default_branch" =~ ^[A-Za-z0-9/_.-]+$ ]]; then
+        die "Invalid default branch name: $default_branch"
+    fi
 
     log_info "Fetching origin/$default_branch and creating worktree '$project_name'..."
     ssh -A -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
-        "mkdir -p ~/projects && cd ~/repos/$repo_name && git fetch origin $default_branch && git worktree add ~/projects/$project_name -b $project_name origin/$default_branch && cd ~/projects/$project_name && git push -u origin $project_name"
+        "mkdir -p ~/projects && cd ~/repos/$repo_name && git fetch origin '$default_branch' && git worktree add ~/projects/$project_name -b $project_name 'origin/$default_branch' && cd ~/projects/$project_name && git push -u origin $project_name"
 
     log_info "Starting Claude in $project_name..."
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" -t "$TART_USER@$ip" \
@@ -762,7 +776,7 @@ cmd_start() {
     local ip ssh_opts
     ip=$(get_vm_ip "$VM_NAME")
     ssh_opts="-o StrictHostKeyChecking=no -i $SSH_KEY"
-    ensure_guest_helpers "$ip" "$ssh_opts" || true
+    ensure_guest_helpers "$ip" "$ssh_opts"
 }
 
 cmd_auth_status() {
@@ -995,8 +1009,13 @@ cmd_diff_helper() {
     GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i $SSH_KEY" \
         git -C "$local_repo" fetch "$TART_USER@$ip:repos/$repo_name" '+refs/heads/*:refs/remotes/tonka/*'
 
+    local default_branch
+    default_branch=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$TART_USER@$ip" \
+        "git -C ~/repos/$repo_name symbolic-ref --short HEAD 2>/dev/null" | tr -d '\r')
+    default_branch="${default_branch:-main}"
+
     local merge_base
-    merge_base=$(git -C "$local_repo" merge-base origin/main "tonka/$branch_name")
+    merge_base=$(git -C "$local_repo" merge-base "origin/$default_branch" "tonka/$branch_name")
     git -C "$local_repo" "$git_cmd" "$merge_base..tonka/$branch_name"
 }
 
